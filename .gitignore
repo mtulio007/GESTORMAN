@@ -1,0 +1,13 @@
+# Arquivos gerados pelo Python
+__pycache__/
+*.py[cod]
+
+# Bancos locais e cópias de segurança
+*.db
+*.sqlite
+*.sqlite3
+
+# Arquivos do sistema e do editor
+.DS_Store
+Thumbs.db
+.vscode/
