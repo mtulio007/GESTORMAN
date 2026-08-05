@@ -491,8 +491,12 @@ class GestorMan(tk.Tk):
                             bg="#eef4fa", fg="#28435e", font=("Segoe UI", 9, "bold"),
                             padx=14, pady=12, bd=1, relief="groove")
         box.pack(fill="x")
-        for col in range(6):
-            box.grid_columnconfigure(col, weight=1)
+        box.grid_columnconfigure(0, weight=1)
+        box.grid_columnconfigure(1, weight=2)
+        box.grid_columnconfigure(2, weight=1)
+        box.grid_columnconfigure(3, weight=1)
+        box.grid_columnconfigure(4, weight=1)
+        box.grid_columnconfigure(5, weight=0, minsize=90)
 
         fields = [
             ("Setor", "setor", "combo"), ("Nº Equipamento", "numero_equipamento", "combo"),
@@ -504,6 +508,24 @@ class GestorMan(tk.Tk):
             ("Tempo Parada", "tempo_parada", "entry"), ("Tempo Serviço", "tempo_servico", "entry"),
             ("Tempo de Resposta", "tempo_resposta", "entry"), ("Situação", "situacao", "combo"),
         ]
+        positions = {
+            "setor": (0, 0, 1),
+            "numero_equipamento": (0, 1, 1),
+            "solicitante": (0, 2, 1),
+            "hora_parada": (0, 3, 1),
+            "tipo_servico": (0, 4, 1),
+            "prioridade": (0, 5, 1),
+            "especialidade": (1, 0, 1),
+            "descricao": (1, 1, 3),
+            "tecnico": (1, 4, 1),
+            "turno": (1, 5, 1),
+            "hora_inicio": (2, 0, 1),
+            "hora_final": (2, 1, 1),
+            "tempo_parada": (2, 2, 1),
+            "tempo_servico": (2, 3, 1),
+            "tempo_resposta": (2, 4, 1),
+            "situacao": (2, 5, 1),
+        }
         self.vars = {key: tk.StringVar() for _, key, _ in fields}
         defaults = {"tipo_servico": "CORRETIVA",
                     "prioridade": "URGENTE", "especialidade": "MECÂNICA",
@@ -729,10 +751,10 @@ class GestorMan(tk.Tk):
             ), "turno": ("A", "B", "C"),
             "situacao": ("ABERTA", "EM ATENDIMENTO", "CONCLUÍDA", "ENCERRADA"),
         }
-        for idx, (label, key, kind) in enumerate(fields):
-            row, col = divmod(idx, 6)
+        for label, key, kind in fields:
+            row, col, span = positions[key]
             cell = tk.Frame(box, bg="#eef4fa")
-            cell.grid(row=row, column=col, sticky="ew", padx=4, pady=4)
+            cell.grid(row=row, column=col, columnspan=span, sticky="ew", padx=4, pady=4)
             tk.Label(cell, text=label, bg="#eef4fa", fg="#38546e", anchor="w",
                      font=("Segoe UI", 7)).pack(fill="x")
             if kind == "combo":
