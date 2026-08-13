@@ -238,10 +238,10 @@ class GestorMan(tk.Tk):
         self.menu_area = tk.Frame(sidebar, bg="#1f3448")
         self.menu_area.pack(fill="both", expand=True, pady=4)
         self._menu_header("Cadastros", True, selected=True)
-        self._menu_subitem("Consulta de OS", self.show_os)
-        self._menu_subitem("Almoxarifado", self.show_almoxarifado)
-        self._menu_subitem("  ⬆ Recebimento de Itens", self.show_almox_recebimento)
-        self._menu_subitem("  ⬇ Saída de Itens", self.show_almox_saida)
+        self._menu_subitem("Ordens de Serviços", self.show_os)
+        self._menu_subitem("Recebimento de Itens", self.show_almox_recebimento)
+        self._menu_subitem("Saída de Itens", self.show_almox_saida)
+        self._menu_subitem("Resumo", self.show_almox_resumo)
 
         self.main = tk.Frame(self, bg="#edf2f7")
         self.main.pack(side="left", fill="both", expand=True)
@@ -398,9 +398,9 @@ class GestorMan(tk.Tk):
                 a.codigo,
                 a.descricao,
                 a.descricao_ingles,
-                COALESCE(SUM(CAST(r.qtd AS REAL)), 0) as entradas,
-                COALESCE(SUM(CAST(s.qtd AS REAL)), 0) as saida,
-                (COALESCE(SUM(CAST(r.qtd AS REAL)), 0) - COALESCE(SUM(CAST(s.qtd AS REAL)), 0)) as saldo,
+                COALESCE(SUM(CAST(REPLACE(REPLACE(TRIM(r.qtd), '.', ''), ',', '.') AS REAL)), 0) as entradas,
+                COALESCE(SUM(CAST(REPLACE(REPLACE(TRIM(s.qtd), '.', ''), ',', '.') AS REAL)), 0) as saida,
+                (COALESCE(SUM(CAST(REPLACE(REPLACE(TRIM(r.qtd), '.', ''), ',', '.') AS REAL)), 0) - COALESCE(SUM(CAST(REPLACE(REPLACE(TRIM(s.qtd), '.', ''), ',', '.') AS REAL)), 0)) as saldo,
                 a.data_inventario,
                 a.responsavel,
                 a.lead_time,
@@ -763,6 +763,86 @@ class GestorMan(tk.Tk):
             connection.execute("DELETE FROM recebimento_almoxarifado WHERE id = ?", (int(selected[0]),))
         self._load_recebimento_items()
         self.new_recebimento_item()
+
+    def show_almox_resumo(self):
+        """Exibe o saldo consolidado de entradas e saídas por item."""
+        self._clear_main()
+        body = self._page_header("Resumo de Movimentação de Itens", "Cadastros  /  Almoxarifado  /  Resumo")
+
+        search = tk.Frame(body, bg="#edf2f7")
+        search.pack(fill="x", pady=(0, 8))
+        search_content = tk.Frame(search, bg="#edf2f7")
+        search_content.pack()
+        tk.Label(search_content, text="Pesquisar", bg="#edf2f7", fg="#38546e",
+                 font=("Segoe UI", 8, "bold")).pack(side="left", padx=(2, 8))
+        self.resumo_search = tk.StringVar()
+        self.resumo_search.trace_add("write", self._load_resumo_items)
+        tk.Entry(search_content, textvariable=self.resumo_search, width=34, font=("Segoe UI", 8),
+                 relief="solid", bd=1).pack(side="left", ipady=3)
+
+        frame = tk.Frame(body, bg="white", bd=1, relief="solid")
+        frame.pack(fill="both", expand=True)
+        columns = ("codigo", "descricao", "entradas", "saidas", "saldo")
+        headings = ("CÓDIGO", "DESCRIÇÃO", "ENTRADAS", "SAÍDAS", "SALDO")
+        widths = (130, 430, 110, 110, 110)
+        self.resumo_grid = ttk.Treeview(frame, columns=columns, show="headings")
+        for col, heading, width in zip(columns, headings, widths):
+            self.resumo_grid.heading(col, text=heading)
+            self.resumo_grid.column(col, width=width, minwidth=80,
+                                    anchor="center" if col in ("entradas", "saidas", "saldo") else "w",
+                                    stretch=(col == "descricao"))
+        self.resumo_grid.tag_configure("negative", foreground="#b23b3b")
+        scroll_y = ttk.Scrollbar(frame, orient="vertical", command=self.resumo_grid.yview)
+        scroll_x = ttk.Scrollbar(frame, orient="horizontal", command=self.resumo_grid.xview)
+        self.resumo_grid.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+        self.resumo_grid.grid(row=0, column=0, sticky="nsew")
+        scroll_y.grid(row=0, column=1, sticky="ns")
+        scroll_x.grid(row=1, column=0, sticky="ew")
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+        self._load_resumo_items()
+
+    def _load_resumo_items(self, *_args):
+        """Carrega entradas, saídas e saldo por código sem multiplicar movimentações."""
+        if not hasattr(self, "resumo_grid"):
+            return
+        for item in self.resumo_grid.get_children():
+            self.resumo_grid.delete(item)
+        term = self.resumo_search.get().strip() if hasattr(self, "resumo_search") else ""
+        query = """
+            WITH recebimentos AS (
+                SELECT codigo, MAX(descricao) AS descricao,
+                       COALESCE(SUM(CAST(REPLACE(REPLACE(TRIM(qtd), '.', ''), ',', '.') AS REAL)), 0) AS entradas
+                FROM recebimento_almoxarifado GROUP BY codigo
+            ), saidas AS (
+                SELECT codigo, MAX(descricao) AS descricao,
+                       COALESCE(SUM(CAST(REPLACE(REPLACE(TRIM(qtd), '.', ''), ',', '.') AS REAL)), 0) AS saidas
+                FROM saida_almoxarifado GROUP BY codigo
+            ), codigos AS (
+                SELECT codigo FROM recebimentos UNION SELECT codigo FROM saidas
+            )
+            SELECT c.codigo, COALESCE(r.descricao, s.descricao, ''),
+                   COALESCE(r.entradas, 0), COALESCE(s.saidas, 0),
+                   COALESCE(r.entradas, 0) - COALESCE(s.saidas, 0)
+            FROM codigos c
+            LEFT JOIN recebimentos r ON r.codigo = c.codigo
+            LEFT JOIN saidas s ON s.codigo = c.codigo
+        """
+        params = ()
+        if term:
+            query += " WHERE c.codigo LIKE ? OR COALESCE(r.descricao, s.descricao, '') LIKE ?"
+            params = (f"%{term}%", f"%{term}%")
+        query += " ORDER BY c.codigo"
+        with sqlite3.connect(self.database_path) as connection:
+            rows = connection.execute(query, params).fetchall()
+        for codigo, descricao, entradas, saidas, saldo in rows:
+            def format_qtd(value, signed=False):
+                value = float(value)
+                formatted = str(int(value)) if value.is_integer() else f"{value:.2f}".replace(".", ",")
+                return f"{value:+g}" if signed and value.is_integer() else (f"+{formatted}" if signed and value >= 0 else formatted)
+            self.resumo_grid.insert("", "end", values=(
+                codigo, descricao, format_qtd(entradas), format_qtd(saidas), format_qtd(saldo, signed=True)
+            ), tags=("negative",) if saldo < 0 else ())
 
     def _select_recebimento_row(self, _event):
         selected = self.recebimento_grid.selection()
