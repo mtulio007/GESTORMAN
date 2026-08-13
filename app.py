@@ -38,6 +38,8 @@ OS_COLUMNS = (
     "prioridade", "especialidade", "descricao", "tecnico", "turno", "hora_inicio",
     "hora_final", "tempo_parada", "tempo_servico", "tempo_resposta", "situacao",
 )
+DATETIME_FORMAT = "%d/%m/%Y %H:%M:%S"
+DATETIME_FIELDS = ("hora_inicio", "hora_final")
 
 TECNICO_TURNO_MAP = {
     "AMAURY SILVA": "B",
@@ -1435,7 +1437,40 @@ class GestorMan(tk.Tk):
             else:
                 widget = tk.Entry(cell, textvariable=self.vars[key], font=("Segoe UI", 8),
                                   relief="solid", bd=1)
+                if key in DATETIME_FIELDS:
+                    widget.bind("<KeyRelease>", lambda _event, field=key: self._apply_datetime_mask(field))
+                    widget.bind("<FocusOut>", lambda _event, field=key: self._apply_datetime_mask(field))
             widget.pack(fill="x", ipady=2)
+
+    def _apply_datetime_mask(self, field):
+        """Converte números digitados/colados em dd/MM/aaaa HH:mm:ss."""
+        value = self.vars[field].get()
+        digits = "".join(character for character in value if character.isdigit())[:14]
+        separators = ((2, "/"), (4, "/"), (8, " "), (10, ":"), (12, ":"))
+        masked = digits
+        for position, separator in separators:
+            if len(digits) > position:
+                masked = masked[:position] + separator + masked[position:]
+        if masked != value:
+            self.vars[field].set(masked)
+
+    def _validate_os_datetimes(self):
+        """Garante que os horários preenchidos tenham data e hora válidas."""
+        labels = {"hora_inicio": "Hora Início", "hora_final": "Hora Final"}
+        for field in DATETIME_FIELDS:
+            value = self.vars[field].get().strip()
+            if not value:
+                continue
+            try:
+                datetime.strptime(value, DATETIME_FORMAT)
+            except ValueError:
+                messagebox.showwarning(
+                    "Data e hora inválidas",
+                    f"{labels[field]} deve estar no formato dd/MM/aaaa HH:mm:ss.\n"
+                    "Exemplo: 13/08/2026 17:03:26",
+                )
+                return False
+        return True
 
     def _apply_turno_by_tecnico(self, _event=None):
         tecnico = self.vars["tecnico"].get().strip().upper()
@@ -1513,7 +1548,10 @@ class GestorMan(tk.Tk):
     def new_os(self):
         for var in self.vars.values():
             var.set("")
-        self.vars["hora_parada"].set(datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
+        current_datetime = datetime.now().strftime(DATETIME_FORMAT)
+        self.vars["hora_parada"].set(current_datetime)
+        self.vars["hora_inicio"].set(current_datetime)
+        self.vars["hora_final"].set(current_datetime)
         self.vars["tipo_servico"].set("CORRETIVA")
         self.vars["prioridade"].set("URGENTE")
         self.vars["especialidade"].set("MECÂNICA")
@@ -1523,6 +1561,8 @@ class GestorMan(tk.Tk):
         required = ("setor", "numero_equipamento", "solicitante", "descricao", "tecnico")
         if any(not self.vars[key].get().strip() for key in required):
             messagebox.showwarning("Campos obrigatórios", "Preencha setor, nº equipamento, solicitante, descrição e técnico.")
+            return
+        if not self._validate_os_datetimes():
             return
         values = tuple(self.vars[key].get().strip() for key in self.COLUMNS)
         columns = ", ".join(self.COLUMNS)
@@ -1630,6 +1670,8 @@ class GestorMan(tk.Tk):
         required = ("setor", "numero_equipamento", "solicitante", "descricao", "tecnico")
         if any(not self.vars[key].get().strip() for key in required):
             messagebox.showwarning("Campos obrigatórios", "Preencha setor, nº equipamento, solicitante, descrição e técnico.")
+            return
+        if not self._validate_os_datetimes():
             return
         values = tuple(self.vars[key].get().strip() for key in self.COLUMNS)
         assignments = ", ".join(f"{column} = ?" for column in self.COLUMNS)
