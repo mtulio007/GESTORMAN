@@ -20,9 +20,18 @@ if (_tcl_root / "tk8.6" / "tk.tcl").is_file():
 
 
 ALMOX_COLUMNS = (
-    "origem", "codigo", "descricao", "descricao_ingles", "estoque_minimo",
-    "qtd_atual", "data_inventario", "responsavel", "data_pedido",
-    "data_entrega", "lead_time", "custo_unitario", "custo_ttl",
+    "origem", "codigo", "descricao", "descricao_ingles", "entradas",
+    "saida", "saldo", "data_inventario", "responsavel", "lead_time",
+    "media_consumo", "estoque_minimo", "estoque_maximo", "est_seguranca",
+    "ponto_pedido", "ressuprimento", "status", "custo_medio", "custo_ttl",
+)
+RECEBIMENTO_COLUMNS = (
+    "data_recebimento", "codigo", "descricao", "und", "qtd",
+    "fornecedor", "num_nota_fiscal", "data_protocolo",
+)
+SAIDA_COLUMNS = (
+    "data", "codigo", "descricao", "un", "qtd",
+    "turno", "aplicacao", "requisitante",
 )
 OS_COLUMNS = (
     "setor", "numero_equipamento", "solicitante", "hora_parada", "tipo_servico",
@@ -60,14 +69,20 @@ def migrate_almoxarifado(connection):
                 codigo TEXT NOT NULL,
                 descricao TEXT NOT NULL,
                 descricao_ingles TEXT,
-                estoque_minimo TEXT,
-                qtd_atual TEXT,
+                entradas TEXT,
+                saida TEXT,
+                saldo TEXT,
                 data_inventario TEXT,
                 responsavel TEXT,
-                data_pedido TEXT,
-                data_entrega TEXT,
                 lead_time TEXT,
-                custo_unitario TEXT,
+                media_consumo TEXT,
+                estoque_minimo TEXT,
+                estoque_maximo TEXT,
+                est_seguranca TEXT,
+                ponto_pedido TEXT,
+                ressuprimento TEXT,
+                status TEXT,
+                custo_medio TEXT,
                 custo_ttl TEXT,
                 UNIQUE(origem, codigo)
             )
@@ -88,11 +103,12 @@ def migrate_almoxarifado(connection):
 
     legacy_values = (
         value_for("origem", "base"), value_for("codigo"), value_for("descricao"),
-        value_for("descricao_ingles"), value_for("estoque_minimo"),
-        value_for("qtd_atual", "qtd"), value_for("data_inventario"),
-        value_for("responsavel"), value_for("data_pedido"), value_for("data_entrega"),
-        value_for("lead_time", "dias_entrega"), value_for("custo_unitario", "custo"),
-        value_for("custo_ttl"),
+        value_for("descricao_ingles"), value_for("entradas"), value_for("saida"),
+        value_for("saldo"), value_for("data_inventario"), value_for("responsavel"),
+        value_for("lead_time", "dias_entrega"), value_for("media_consumo"),
+        value_for("estoque_minimo"), value_for("estoque_maximo"), value_for("est_seguranca"),
+        value_for("ponto_pedido"), value_for("ressuprimento"), value_for("status"),
+        value_for("custo_medio", "custo"), value_for("custo_ttl"),
     )
     connection.execute("ALTER TABLE almoxarifado RENAME TO almoxarifado_anterior")
     connection.execute("""
@@ -102,14 +118,20 @@ def migrate_almoxarifado(connection):
             codigo TEXT NOT NULL,
             descricao TEXT NOT NULL,
             descricao_ingles TEXT,
-            estoque_minimo TEXT,
-            qtd_atual TEXT,
+            entradas TEXT,
+            saida TEXT,
+            saldo TEXT,
             data_inventario TEXT,
             responsavel TEXT,
-            data_pedido TEXT,
-            data_entrega TEXT,
             lead_time TEXT,
-            custo_unitario TEXT,
+            media_consumo TEXT,
+            estoque_minimo TEXT,
+            estoque_maximo TEXT,
+            est_seguranca TEXT,
+            ponto_pedido TEXT,
+            ressuprimento TEXT,
+            status TEXT,
+            custo_medio TEXT,
             custo_ttl TEXT,
             UNIQUE(origem, codigo)
         )
@@ -126,6 +148,8 @@ class GestorMan(tk.Tk):
 
     COLUMNS = OS_COLUMNS
     ALMOX_COLUMNS = ALMOX_COLUMNS
+    RECEBIMENTO_COLUMNS = RECEBIMENTO_COLUMNS
+    SAIDA_COLUMNS = SAIDA_COLUMNS
 
     def __init__(self):
         super().__init__()
@@ -164,6 +188,32 @@ class GestorMan(tk.Tk):
                     situacao TEXT
                 )
             """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS recebimento_almoxarifado (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    data_recebimento TEXT,
+                    codigo TEXT NOT NULL,
+                    descricao TEXT NOT NULL,
+                    und TEXT,
+                    qtd TEXT,
+                    fornecedor TEXT,
+                    num_nota_fiscal TEXT,
+                    data_protocolo TEXT
+                )
+            """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS saida_almoxarifado (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    data TEXT,
+                    codigo TEXT NOT NULL,
+                    descricao TEXT NOT NULL,
+                    un TEXT,
+                    qtd TEXT,
+                    turno TEXT,
+                    aplicacao TEXT,
+                    requisitante TEXT
+                )
+            """)
 
     def _build_style(self):
         style = ttk.Style(self)
@@ -190,9 +240,8 @@ class GestorMan(tk.Tk):
         self._menu_header("Cadastros", True, selected=True)
         self._menu_subitem("Consulta de OS", self.show_os)
         self._menu_subitem("Almoxarifado", self.show_almoxarifado)
-        self._menu_header("Pedidos", False)
-        self._menu_header("Hora Extras", False)
-        self._menu_header("Pedidos", False)
+        self._menu_subitem("  ⬆ Recebimento de Itens", self.show_almox_recebimento)
+        self._menu_subitem("  ⬇ Saída de Itens", self.show_almox_saida)
 
         self.main = tk.Frame(self, bg="#edf2f7")
         self.main.pack(side="left", fill="both", expand=True)
@@ -208,12 +257,12 @@ class GestorMan(tk.Tk):
         mark = "⌄" if expanded else "›"
         bg = "#1f3448"
         tk.Label(self.menu_area, text=f" {mark}   {text}", anchor="w", bg=bg, fg="white",
-                 font=("Segoe UI", 8, "bold"), padx=18, pady=8).pack(fill="x")
+                 font=("Segoe UI", 10, "bold"), padx=18, pady=8).pack(fill="x")
 
     def _menu_subitem(self, text, command):
         tk.Button(self.menu_area, text=text, command=command, anchor="w", bd=0,
                   relief="flat", bg="#1f3448", activebackground="#2e4b64",
-                  activeforeground="white", fg="#b9c9d7", font=("Segoe UI", 7),
+                  activeforeground="white", fg="#b9c9d7", font=("Segoe UI", 8),
                   padx=32, pady=7, cursor="hand2").pack(fill="x")
 
     def _clear_main(self):
@@ -262,12 +311,17 @@ class GestorMan(tk.Tk):
 
         fields = [
             ("Origem", "origem"), ("Código", "codigo"), ("Descrição", "descricao"),
-            ("Descrição Inglês", "descricao_ingles"), ("Estoque Mínimo", "estoque_minimo"),
-            ("Qtd Atual", "qtd_atual"), ("Data Inventário", "data_inventario"),
-            ("Responsável", "responsavel"), ("Data Pedido", "data_pedido"),
-            ("Data Entrega", "data_entrega"), ("Lead Time", "lead_time"),
-            ("Custo Unitário", "custo_unitario"), ("Custo TTL", "custo_ttl"),
+            ("Descrição Inglês", "descricao_ingles"), ("Entradas", "entradas"),
+            ("Saída", "saida"), ("Saldo", "saldo"), ("Data Inventário", "data_inventario"),
+            ("Responsável", "responsavel"), ("Lead Time (dias)", "lead_time"),
+            ("Média Consumo", "media_consumo"), ("Estoque Mínimo", "estoque_minimo"),
+            ("Estoque Máximo", "estoque_maximo"), ("Est. Segurança", "est_seguranca"),
+            ("Ponto Pedido", "ponto_pedido"), ("Ressuprimento", "ressuprimento"),
+            ("Status", "status"), ("Custo Médio", "custo_medio"), ("Custo TTL", "custo_ttl"),
         ]
+        # Campos que são calculados automaticamente (read-only)
+        read_only_fields = ("entradas", "saida", "saldo")
+        
         self.almox_vars = {key: tk.StringVar() for _, key in fields}
         for idx, (label, key) in enumerate(fields):
             row, col = divmod(idx, 5)
@@ -275,8 +329,13 @@ class GestorMan(tk.Tk):
             cell.grid(row=row, column=col, sticky="ew", padx=4, pady=4)
             tk.Label(cell, text=label, bg="#eef4fa", fg="#38546e", anchor="w",
                      font=("Segoe UI", 7)).pack(fill="x")
-            tk.Entry(cell, textvariable=self.almox_vars[key], font=("Segoe UI", 8),
-                     relief="solid", bd=1).pack(fill="x", ipady=2)
+            # Campos de entradas, saída e saldo são somente leitura (calculados automaticamente)
+            if key in read_only_fields:
+                tk.Entry(cell, textvariable=self.almox_vars[key], font=("Segoe UI", 8),
+                         relief="solid", bd=1, state="readonly", readonlybackground="#e8eef5").pack(fill="x", ipady=2)
+            else:
+                tk.Entry(cell, textvariable=self.almox_vars[key], font=("Segoe UI", 8),
+                         relief="solid", bd=1).pack(fill="x", ipady=2)
 
     def _build_almox_actions(self, parent):
         actions = tk.Frame(parent, bg="#edf2f7")
@@ -301,14 +360,19 @@ class GestorMan(tk.Tk):
 
         frame = tk.Frame(parent, bg="white", bd=1, relief="solid")
         frame.pack(fill="both", expand=True)
-        headings = ("ORIGEM", "CÓDIGO", "DESCRIÇÃO", "DESCRIÇÃO INGLÊS", "ESTOQUE MÍNIMO",
-                    "QTD ATUAL", "DATA INVENTÁRIO", "RESPONSÁVEL", "DATA PEDIDO",
-                    "DATA ENTREGA", "LEAD TIME", "CUSTO UNITÁRIO", "CUSTO TTL")
-        widths = (120, 100, 230, 210, 105, 80, 110, 130, 105, 105, 85, 110, 100)
+        headings = ("ORIGEM", "CÓDIGO", "DESCRIÇÃO", "DESCRIÇÃO INGLÊS", "ENTRADAS",
+                "SAÍDA", "SALDO", "DATA INVENTÁRIO", "RESPONSÁVEL", "LEAD TIME (DIAS)",
+                "MÉDIA CONSUMO", "ESTOQUE MÍNIMO", "ESTOQUE MÁXIMO", "EST. SEGURANÇA",
+                "PONTO PEDIDO", "RESSUPRIMENTO", "STATUS", "CUSTO MÉDIO", "CUSTO TTL")
+        widths = (120, 100, 230, 180, 90, 80, 80, 110, 130, 95, 100, 100, 100, 105, 95, 110, 90, 110, 100)
         self.almox_grid = ttk.Treeview(frame, columns=self.ALMOX_COLUMNS, show="headings", selectmode="browse")
+        # Configura tag para valores negativos (saldo negativo em vermelho)
+        self.almox_grid.tag_configure("negative", foreground="#d32f2f")
         for col, heading, width in zip(self.ALMOX_COLUMNS, headings, widths):
             self.almox_grid.heading(col, text=heading)
-            self.almox_grid.column(col, width=width, minwidth=65, stretch=(col in ("descricao", "descricao_ingles")))
+            # Centraliza colunas de valores numéricos
+            anchor = "center" if col in ("entradas", "saida", "saldo") else "w"
+            self.almox_grid.column(col, width=width, minwidth=65, anchor=anchor, stretch=(col in ("descricao", "descricao_ingles")))
         scroll_y = ttk.Scrollbar(frame, orient="vertical", command=self.almox_grid.yview)
         scroll_x = ttk.Scrollbar(frame, orient="horizontal", command=self.almox_grid.xview)
         self.almox_grid.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
@@ -320,22 +384,76 @@ class GestorMan(tk.Tk):
         self.almox_grid.bind("<<TreeviewSelect>>", self._select_almox_row)
 
     def _load_almox_items(self):
-        """Consulta no SQLite os itens que atendem ao texto pesquisado."""
+        """Consulta no SQLite os itens com cálculos de entradas, saída e saldo."""
         for item in self.almox_grid.get_children():
             self.almox_grid.delete(item)
         term = self.almox_search.get().strip() if hasattr(self, "almox_search") else ""
-        columns = ", ".join(self.ALMOX_COLUMNS)
-        query = f"SELECT id, {columns} FROM almoxarifado"
+        
+        # Query com LEFT JOINs para calcular entradas, saída e saldo a partir de outras tabelas
+        # Fórmula do Saldo: Entrada - Saída
+        query = """
+            SELECT 
+                a.id,
+                a.origem,
+                a.codigo,
+                a.descricao,
+                a.descricao_ingles,
+                COALESCE(SUM(CAST(r.qtd AS REAL)), 0) as entradas,
+                COALESCE(SUM(CAST(s.qtd AS REAL)), 0) as saida,
+                (COALESCE(SUM(CAST(r.qtd AS REAL)), 0) - COALESCE(SUM(CAST(s.qtd AS REAL)), 0)) as saldo,
+                a.data_inventario,
+                a.responsavel,
+                a.lead_time,
+                a.media_consumo,
+                a.estoque_minimo,
+                a.estoque_maximo,
+                a.est_seguranca,
+                a.ponto_pedido,
+                a.ressuprimento,
+                a.status,
+                a.custo_medio,
+                a.custo_ttl
+            FROM almoxarifado a
+            LEFT JOIN recebimento_almoxarifado r ON a.codigo = r.codigo
+            LEFT JOIN saida_almoxarifado s ON a.codigo = s.codigo
+        """
+        
         params = ()
         if term:
-            condition = " OR ".join(f"{column} LIKE ?" for column in self.ALMOX_COLUMNS)
+            condition = " OR ".join(f"a.{column} LIKE ?" for column in self.ALMOX_COLUMNS)
             query += f" WHERE {condition}"
             params = tuple(f"%{term}%" for _ in self.ALMOX_COLUMNS)
-        query += " ORDER BY origem, codigo"
+        
+        query += " GROUP BY a.id, a.codigo ORDER BY a.origem, a.codigo"
+        
         with sqlite3.connect(self.database_path) as connection:
             rows = connection.execute(query, params).fetchall()
-        for row_id, *values in rows:
-            self.almox_grid.insert("", "end", iid=str(row_id), values=values)
+        
+        for row in rows:
+            row_id = row[0]
+            values = row[1:]
+            # Formata os valores numéricos como inteiro
+            formatted_values = []
+            saldo_value = None
+            for idx, val in enumerate(values):
+                if idx in (5, 6, 7):  # entradas, saida, saldo
+                    if isinstance(val, (int, float)):
+                        int_val = int(val)
+                        if idx == 7:  # Saldo com sinal
+                            saldo_value = int_val
+                            formatted_values.append(f"{int_val:+d}")
+                        else:
+                            formatted_values.append(str(int_val))
+                    else:
+                        if idx == 7:
+                            formatted_values.append("+0")
+                        else:
+                            formatted_values.append("0")
+                else:
+                    formatted_values.append(str(val) if val else "")
+            # Aplica tag "negative" se o saldo for negativo
+            tags = ("negative",) if saldo_value is not None and saldo_value < 0 else ()
+            self.almox_grid.insert("", "end", iid=str(row_id), values=formatted_values, tags=tags)
 
     def filter_almox_items(self, *_args):
         if hasattr(self, "almox_grid"):
@@ -351,11 +469,13 @@ class GestorMan(tk.Tk):
         if any(not self.almox_vars[key].get().strip() for key in required):
             messagebox.showwarning("Campos obrigatórios", "Preencha origem, código e descrição.")
             return
-        values = tuple(self.almox_vars[key].get().strip() for key in self.ALMOX_COLUMNS)
+        # Exclui campos calculados automaticamente
+        editable_fields = tuple(col for col in self.ALMOX_COLUMNS if col not in ("entradas", "saida", "saldo"))
+        values = tuple(self.almox_vars[key].get().strip() for key in editable_fields)
         try:
             with sqlite3.connect(self.database_path) as connection:
-                columns = ", ".join(self.ALMOX_COLUMNS)
-                placeholders = ", ".join("?" for _ in self.ALMOX_COLUMNS)
+                columns = ", ".join(editable_fields)
+                placeholders = ", ".join("?" for _ in editable_fields)
                 connection.execute(f"INSERT INTO almoxarifado ({columns}) VALUES ({placeholders})", values)
         except sqlite3.IntegrityError:
             messagebox.showwarning("Código duplicado", "Já existe um item com esta origem e código.")
@@ -372,8 +492,10 @@ class GestorMan(tk.Tk):
         if any(not self.almox_vars[key].get().strip() for key in required):
             messagebox.showwarning("Campos obrigatórios", "Preencha origem, código e descrição.")
             return
-        values = tuple(self.almox_vars[key].get().strip() for key in self.ALMOX_COLUMNS)
-        assignments = ", ".join(f"{column} = ?" for column in self.ALMOX_COLUMNS)
+        # Exclui campos calculados automaticamente
+        editable_fields = tuple(col for col in self.ALMOX_COLUMNS if col not in ("entradas", "saida", "saldo"))
+        values = tuple(self.almox_vars[key].get().strip() for key in editable_fields)
+        assignments = ", ".join(f"{column} = ?" for column in editable_fields)
         try:
             with sqlite3.connect(self.database_path) as connection:
                 connection.execute(f"UPDATE almoxarifado SET {assignments} WHERE id = ?",
@@ -424,12 +546,18 @@ class GestorMan(tk.Tk):
         aliases = {
             "ORIGEM": "origem", "BASE": "origem", "CODIGO": "codigo", "DESCRICAO": "descricao",
             "DESCRICAOINGLES": "descricao_ingles", "DESCRIPTIONENGLISH": "descricao_ingles",
-            "ESTOQUEMINIMO": "estoque_minimo", "QTDATUAL": "qtd_atual",
-            "QTD": "qtd_atual", "QUANTIDADE": "qtd_atual", "DATAINVENTARIO": "data_inventario",
-            "RESPONSAVEL": "responsavel", "DATAPEDIDO": "data_pedido",
-            "DATAENTREGA": "data_entrega", "LEADTIME": "lead_time",
-            "DIASENTREGA": "lead_time", "CUSTOUNITARIO": "custo_unitario",
-            "CUSTO": "custo_unitario", "CUSTOTTL": "custo_ttl", "CUSTOTOTAL": "custo_ttl",
+            "ENTRADAS": "entradas", "SAIDA": "saida", "SAÍDA": "saida", "SALDO": "saldo",
+            "ESTOQUEMINIMO": "estoque_minimo", "ESTOQUEMAXIMO": "estoque_maximo",
+            "ESTSEGURANCA": "est_seguranca", "EST. SEGURANCA": "est_seguranca",
+            "MEDIACONSUMO": "media_consumo", "MEDIA CONSUMO": "media_consumo",
+            "QTDATUAL": "entradas", "QTD": "entradas", "QUANTIDADE": "entradas",
+            "DATAINVENTARIO": "data_inventario", "RESPONSAVEL": "responsavel",
+            "LEADTIME": "lead_time", "DIASENTREGA": "lead_time",
+            "PONTOPEDIDO": "ponto_pedido", "PONTO_PEDIDO": "ponto_pedido",
+            "RESSUPRIMENTO": "ressuprimento", "STATUS": "status",
+            "CUSTOMEDIO": "custo_medio", "CUSTO_MEDIO": "custo_medio",
+            "CUSTOUNITARIO": "custo_medio", "CUSTO": "custo_medio",
+            "CUSTOTTL": "custo_ttl", "CUSTOTOTAL": "custo_ttl",
         }
         indexes = {aliases[header]: position for position, header in enumerate(headers) if header in aliases}
         has_header = all(field in indexes for field in ("origem", "codigo", "descricao"))
@@ -485,6 +613,468 @@ class GestorMan(tk.Tk):
         values = self.almox_grid.item(selected[0], "values")
         for key, value in zip(self.ALMOX_COLUMNS, values):
             self.almox_vars[key].set(value)
+
+    def show_almox_recebimento(self):
+        self._clear_main()
+        body = self._page_header("Recebimento de Itens de Almoxarifado", "Cadastros  /  Almoxarifado  /  Recebimento")
+        self._build_recebimento_form(body)
+        self._build_recebimento_actions(body)
+        self._build_recebimento_table(body)
+        self._load_recebimento_items()
+        self.new_recebimento_item()
+
+    def _build_recebimento_form(self, parent):
+        box = tk.LabelFrame(parent, text="  Dados de Recebimento  ",
+                            bg="#eef4fa", fg="#28435e", font=("Segoe UI", 9, "bold"),
+                            padx=14, pady=12, bd=1, relief="groove")
+        box.pack(fill="x")
+        box.grid_columnconfigure(0, weight=1)
+        box.grid_columnconfigure(1, weight=1)
+        box.grid_columnconfigure(2, weight=1)
+        box.grid_columnconfigure(3, weight=1)
+
+        fields = [
+            ("Data Recebimento", "data_recebimento"), ("Código", "codigo"), 
+            ("Descrição", "descricao"), ("Unidade", "und"),
+            ("Quantidade", "qtd"), ("Fornecedor", "fornecedor"), 
+            ("Nº Nota Fiscal", "num_nota_fiscal"), ("Data / Protocolo", "data_protocolo"),
+        ]
+        self.recebimento_vars = {key: tk.StringVar() for _, key in fields}
+        for idx, (label, key) in enumerate(fields):
+            row, col = divmod(idx, 4)
+            cell = tk.Frame(box, bg="#eef4fa")
+            cell.grid(row=row, column=col, sticky="ew", padx=4, pady=4)
+            tk.Label(cell, text=label, bg="#eef4fa", fg="#38546e", anchor="w",
+                     font=("Segoe UI", 7)).pack(fill="x")
+            tk.Entry(cell, textvariable=self.recebimento_vars[key], font=("Segoe UI", 8),
+                     relief="solid", bd=1).pack(fill="x", ipady=2)
+
+    def _build_recebimento_actions(self, parent):
+        actions = tk.Frame(parent, bg="#edf2f7")
+        actions.pack(pady=16)
+        self._action(actions, "＋  Novo Recebimento", self.new_recebimento_item, "#ffffff", "#315a7c")
+        self._action(actions, "▣  Inserir", self.insert_recebimento_item, "#1678bf", "white")
+        self._action(actions, "✓  Salvar edição", self.update_recebimento_item, "#ffffff", "#315a7c")
+        self._action(actions, "⇧  Carga TXT", self.import_recebimento_txt, "#ffffff", "#315a7c")
+        self._action(actions, "✕  Excluir", self.delete_recebimento_item, "#ffffff", "#b23b3b")
+
+    def _build_recebimento_table(self, parent):
+        search = tk.Frame(parent, bg="#edf2f7")
+        search.pack(fill="x", pady=(0, 8))
+        search_content = tk.Frame(search, bg="#edf2f7")
+        search_content.pack()
+        tk.Label(search_content, text="Pesquisar", bg="#edf2f7", fg="#38546e",
+                 font=("Segoe UI", 8, "bold")).pack(side="left", padx=(2, 8))
+        self.recebimento_search = tk.StringVar()
+        self.recebimento_search.trace_add("write", self.filter_recebimento_items)
+        tk.Entry(search_content, textvariable=self.recebimento_search, width=34, font=("Segoe UI", 8),
+                 relief="solid", bd=1).pack(side="left", ipady=3)
+
+        frame = tk.Frame(parent, bg="white", bd=1, relief="solid")
+        frame.pack(fill="both", expand=True)
+        headings = ("DATA RECEBIMENTO", "CÓDIGO", "DESCRIÇÃO", "UND", "QTD", 
+                    "FORNECEDOR", "Nº NOTA FISCAL", "DATA / PROTOCOLO")
+        widths = (140, 100, 250, 70, 80, 180, 130, 140)
+        self.recebimento_grid = ttk.Treeview(frame, columns=self.RECEBIMENTO_COLUMNS, show="headings", selectmode="browse")
+        for col, heading, width in zip(self.RECEBIMENTO_COLUMNS, headings, widths):
+            self.recebimento_grid.heading(col, text=heading)
+            self.recebimento_grid.column(col, width=width, minwidth=65, stretch=(col == "descricao"))
+        scroll_y = ttk.Scrollbar(frame, orient="vertical", command=self.recebimento_grid.yview)
+        scroll_x = ttk.Scrollbar(frame, orient="horizontal", command=self.recebimento_grid.xview)
+        self.recebimento_grid.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+        self.recebimento_grid.grid(row=0, column=0, sticky="nsew")
+        scroll_y.grid(row=0, column=1, sticky="ns")
+        scroll_x.grid(row=1, column=0, sticky="ew")
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+        self.recebimento_grid.bind("<<TreeviewSelect>>", self._select_recebimento_row)
+
+    def _load_recebimento_items(self):
+        """Consulta no SQLite os itens de recebimento que atendem ao texto pesquisado."""
+        for item in self.recebimento_grid.get_children():
+            self.recebimento_grid.delete(item)
+        term = self.recebimento_search.get().strip() if hasattr(self, "recebimento_search") else ""
+        columns = ", ".join(self.RECEBIMENTO_COLUMNS)
+        query = f"SELECT id, {columns} FROM recebimento_almoxarifado"
+        params = ()
+        if term:
+            condition = " OR ".join(f"{column} LIKE ?" for column in self.RECEBIMENTO_COLUMNS)
+            query += f" WHERE {condition}"
+            params = tuple(f"%{term}%" for _ in self.RECEBIMENTO_COLUMNS)
+        query += " ORDER BY data_recebimento DESC"
+        with sqlite3.connect(self.database_path) as connection:
+            rows = connection.execute(query, params).fetchall()
+        for row_id, *values in rows:
+            self.recebimento_grid.insert("", "end", iid=str(row_id), values=values)
+
+    def filter_recebimento_items(self, *_args):
+        if hasattr(self, "recebimento_grid"):
+            self._load_recebimento_items()
+
+    def new_recebimento_item(self):
+        for var in self.recebimento_vars.values():
+            var.set("")
+        self.recebimento_grid.selection_remove(self.recebimento_grid.selection())
+
+    def insert_recebimento_item(self):
+        required = ("data_recebimento", "codigo", "descricao")
+        if any(not self.recebimento_vars[key].get().strip() for key in required):
+            messagebox.showwarning("Campos obrigatórios", "Preencha data de recebimento, código e descrição.")
+            return
+        values = tuple(self.recebimento_vars[key].get().strip() for key in self.RECEBIMENTO_COLUMNS)
+        try:
+            with sqlite3.connect(self.database_path) as connection:
+                columns = ", ".join(self.RECEBIMENTO_COLUMNS)
+                placeholders = ", ".join("?" for _ in self.RECEBIMENTO_COLUMNS)
+                connection.execute(f"INSERT INTO recebimento_almoxarifado ({columns}) VALUES ({placeholders})", values)
+        except sqlite3.Error as error:
+            messagebox.showerror("Erro ao inserir", f"Não foi possível inserir o item.\n\n{error}")
+            return
+        self._load_recebimento_items()
+        self.new_recebimento_item()
+
+    def update_recebimento_item(self):
+        selected = self.recebimento_grid.selection()
+        if not selected:
+            messagebox.showinfo("Salvar edição", "Selecione um item para editar.")
+            return
+        required = ("data_recebimento", "codigo", "descricao")
+        if any(not self.recebimento_vars[key].get().strip() for key in required):
+            messagebox.showwarning("Campos obrigatórios", "Preencha data de recebimento, código e descrição.")
+            return
+        values = tuple(self.recebimento_vars[key].get().strip() for key in self.RECEBIMENTO_COLUMNS)
+        assignments = ", ".join(f"{column} = ?" for column in self.RECEBIMENTO_COLUMNS)
+        try:
+            with sqlite3.connect(self.database_path) as connection:
+                connection.execute(f"UPDATE recebimento_almoxarifado SET {assignments} WHERE id = ?",
+                                   (*values, int(selected[0])))
+        except sqlite3.Error as error:
+            messagebox.showerror("Erro ao atualizar", f"Não foi possível atualizar o item.\n\n{error}")
+            return
+        self._load_recebimento_items()
+        self.new_recebimento_item()
+
+    def delete_recebimento_item(self):
+        selected = self.recebimento_grid.selection()
+        if not selected:
+            messagebox.showinfo("Excluir item", "Selecione um item na lista.")
+            return
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("DELETE FROM recebimento_almoxarifado WHERE id = ?", (int(selected[0]),))
+        self._load_recebimento_items()
+        self.new_recebimento_item()
+
+    def _select_recebimento_row(self, _event):
+        selected = self.recebimento_grid.selection()
+        if not selected:
+            return
+        values = self.recebimento_grid.item(selected[0], "values")
+        for key, value in zip(self.RECEBIMENTO_COLUMNS, values):
+            self.recebimento_vars[key].set(value)
+
+    def _read_recebimento_txt_rows(self, file_path):
+        """Lê TXT de recebimento separado por ;, tab, | ou vírgula, com cabeçalho opcional."""
+        content = None
+        for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+            try:
+                content = Path(file_path).read_text(encoding=encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        if content is None:
+            raise ValueError("Não foi possível identificar a codificação do arquivo TXT.")
+
+        lines = [line for line in content.splitlines() if line.strip()]
+        if not lines:
+            raise ValueError("O arquivo TXT está vazio.")
+        try:
+            delimiter = csv.Sniffer().sniff("\n".join(lines[:10]), delimiters=";\t|,").delimiter
+        except csv.Error:
+            delimiter = ";"
+        rows = list(csv.reader(lines, delimiter=delimiter))
+        headers = [self._normalize_header(value) for value in rows[0]]
+        aliases = {
+            "DATARECEBIMENTO": "data_recebimento", "DATA_RECEBIMENTO": "data_recebimento",
+            "DATAREC": "data_recebimento", "CODIGO": "codigo", "DESCRICAO": "descricao",
+            "UND": "und", "UNIDADE": "und", "QTD": "qtd", "QUANTIDADE": "qtd",
+            "FORNECEDOR": "fornecedor", "NUMNOTAFISCAL": "num_nota_fiscal",
+            "NUMERONOTAFISCAL": "num_nota_fiscal", "NOTAFISCAL": "num_nota_fiscal",
+            "NNOTAFISCAL": "num_nota_fiscal", "DATAPROTOCOLO": "data_protocolo",
+            "DATA_PROTOCOLO": "data_protocolo", "PROTOCOLO": "data_protocolo",
+        }
+        indexes = {aliases[header]: position for position, header in enumerate(headers) if header in aliases}
+        has_header = all(field in indexes for field in ("data_recebimento", "codigo", "descricao"))
+        data_rows = rows[1:] if has_header else rows
+        loaded_rows, skipped = [], 0
+        for row in data_rows:
+            if has_header:
+                values = tuple(row[indexes[field]].strip() if indexes.get(field, -1) < len(row) else ""
+                               for field in self.RECEBIMENTO_COLUMNS)
+            else:
+                values = tuple(value.strip() for value in row[:len(self.RECEBIMENTO_COLUMNS)])
+                values += ("",) * (len(self.RECEBIMENTO_COLUMNS) - len(values))
+            if not any(values):
+                continue
+            if not all(values[index].strip() for index in (0, 1, 2)):
+                skipped += 1
+                continue
+            loaded_rows.append(values)
+        return loaded_rows, skipped
+
+    def import_recebimento_txt(self):
+        file_path = filedialog.askopenfilename(
+            title="Selecionar arquivo TXT de recebimento de materiais",
+            filetypes=(("Arquivos TXT", "*.txt"), ("Todos os arquivos", "*.*")),
+        )
+        if not file_path:
+            return
+        try:
+            rows, skipped = self._read_recebimento_txt_rows(file_path)
+            if not rows:
+                messagebox.showwarning("Carga TXT", "Nenhum item válido foi encontrado no arquivo.")
+                return
+            columns = ", ".join(self.RECEBIMENTO_COLUMNS)
+            placeholders = ", ".join("?" for _ in self.RECEBIMENTO_COLUMNS)
+            query = f"INSERT INTO recebimento_almoxarifado ({columns}) VALUES ({placeholders})"
+            with sqlite3.connect(self.database_path) as connection:
+                connection.executemany(query, rows)
+        except (OSError, ValueError, csv.Error) as error:
+            messagebox.showerror("Carga TXT", f"Não foi possível carregar o arquivo.\n\n{error}")
+            return
+        self._load_recebimento_items()
+        message = f"{len(rows)} item(ns) carregado(s) no banco."
+        if skipped:
+            message += f"\n{skipped} linha(s) ignorada(s) por não conter data, código e descrição."
+        messagebox.showinfo("Carga TXT concluída", message)
+
+    def show_almox_saida(self):
+        self._clear_main()
+        body = self._page_header("Saída de Itens de Almoxarifado", "Cadastros  /  Almoxarifado  /  Saída")
+        self._build_saida_form(body)
+        self._build_saida_actions(body)
+        self._build_saida_table(body)
+        self._load_saida_items()
+        self.new_saida_item()
+
+    def _build_saida_form(self, parent):
+        box = tk.LabelFrame(parent, text="  Dados de Saída  ",
+                            bg="#eef4fa", fg="#28435e", font=("Segoe UI", 9, "bold"),
+                            padx=14, pady=12, bd=1, relief="groove")
+        box.pack(fill="x")
+        box.grid_columnconfigure(0, weight=1)
+        box.grid_columnconfigure(1, weight=1)
+        box.grid_columnconfigure(2, weight=1)
+        box.grid_columnconfigure(3, weight=1)
+
+        fields = [
+            ("Data", "data"), ("Código", "codigo"), 
+            ("Descrição", "descricao"), ("Unidade", "un"),
+            ("Quantidade", "qtd"), ("Turno", "turno"), 
+            ("Aplicação", "aplicacao"), ("Requisitante", "requisitante"),
+        ]
+        self.saida_vars = {key: tk.StringVar() for _, key in fields}
+        for idx, (label, key) in enumerate(fields):
+            row, col = divmod(idx, 4)
+            cell = tk.Frame(box, bg="#eef4fa")
+            cell.grid(row=row, column=col, sticky="ew", padx=4, pady=4)
+            tk.Label(cell, text=label, bg="#eef4fa", fg="#38546e", anchor="w",
+                     font=("Segoe UI", 7)).pack(fill="x")
+            tk.Entry(cell, textvariable=self.saida_vars[key], font=("Segoe UI", 8),
+                     relief="solid", bd=1).pack(fill="x", ipady=2)
+
+    def _build_saida_actions(self, parent):
+        actions = tk.Frame(parent, bg="#edf2f7")
+        actions.pack(pady=16)
+        self._action(actions, "＋  Nova Saída", self.new_saida_item, "#ffffff", "#315a7c")
+        self._action(actions, "▣  Inserir", self.insert_saida_item, "#1678bf", "white")
+        self._action(actions, "✓  Salvar edição", self.update_saida_item, "#ffffff", "#315a7c")
+        self._action(actions, "⇧  Carga TXT", self.import_saida_txt, "#ffffff", "#315a7c")
+        self._action(actions, "✕  Excluir", self.delete_saida_item, "#ffffff", "#b23b3b")
+
+    def _build_saida_table(self, parent):
+        search = tk.Frame(parent, bg="#edf2f7")
+        search.pack(fill="x", pady=(0, 8))
+        search_content = tk.Frame(search, bg="#edf2f7")
+        search_content.pack()
+        tk.Label(search_content, text="Pesquisar", bg="#edf2f7", fg="#38546e",
+                 font=("Segoe UI", 8, "bold")).pack(side="left", padx=(2, 8))
+        self.saida_search = tk.StringVar()
+        self.saida_search.trace_add("write", self.filter_saida_items)
+        tk.Entry(search_content, textvariable=self.saida_search, width=34, font=("Segoe UI", 8),
+                 relief="solid", bd=1).pack(side="left", ipady=3)
+
+        frame = tk.Frame(parent, bg="white", bd=1, relief="solid")
+        frame.pack(fill="both", expand=True)
+        headings = ("DATA", "CÓDIGO", "DESCRIÇÃO", "UN", "QTD", 
+                    "TURNO", "APLICAÇÃO", "REQUISITANTE")
+        widths = (120, 100, 250, 70, 80, 80, 180, 150)
+        self.saida_grid = ttk.Treeview(frame, columns=self.SAIDA_COLUMNS, show="headings", selectmode="browse")
+        for col, heading, width in zip(self.SAIDA_COLUMNS, headings, widths):
+            self.saida_grid.heading(col, text=heading)
+            self.saida_grid.column(col, width=width, minwidth=65, stretch=(col == "descricao"))
+        scroll_y = ttk.Scrollbar(frame, orient="vertical", command=self.saida_grid.yview)
+        scroll_x = ttk.Scrollbar(frame, orient="horizontal", command=self.saida_grid.xview)
+        self.saida_grid.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+        self.saida_grid.grid(row=0, column=0, sticky="nsew")
+        scroll_y.grid(row=0, column=1, sticky="ns")
+        scroll_x.grid(row=1, column=0, sticky="ew")
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+        self.saida_grid.bind("<<TreeviewSelect>>", self._select_saida_row)
+
+    def _load_saida_items(self):
+        """Consulta no SQLite os itens de saída que atendem ao texto pesquisado."""
+        for item in self.saida_grid.get_children():
+            self.saida_grid.delete(item)
+        term = self.saida_search.get().strip() if hasattr(self, "saida_search") else ""
+        columns = ", ".join(self.SAIDA_COLUMNS)
+        query = f"SELECT id, {columns} FROM saida_almoxarifado"
+        params = ()
+        if term:
+            condition = " OR ".join(f"{column} LIKE ?" for column in self.SAIDA_COLUMNS)
+            query += f" WHERE {condition}"
+            params = tuple(f"%{term}%" for _ in self.SAIDA_COLUMNS)
+        query += " ORDER BY data DESC"
+        with sqlite3.connect(self.database_path) as connection:
+            rows = connection.execute(query, params).fetchall()
+        for row_id, *values in rows:
+            self.saida_grid.insert("", "end", iid=str(row_id), values=values)
+
+    def filter_saida_items(self, *_args):
+        if hasattr(self, "saida_grid"):
+            self._load_saida_items()
+
+    def new_saida_item(self):
+        for var in self.saida_vars.values():
+            var.set("")
+        self.saida_grid.selection_remove(self.saida_grid.selection())
+
+    def insert_saida_item(self):
+        required = ("data", "codigo", "descricao")
+        if any(not self.saida_vars[key].get().strip() for key in required):
+            messagebox.showwarning("Campos obrigatórios", "Preencha data, código e descrição.")
+            return
+        values = tuple(self.saida_vars[key].get().strip() for key in self.SAIDA_COLUMNS)
+        try:
+            with sqlite3.connect(self.database_path) as connection:
+                columns = ", ".join(self.SAIDA_COLUMNS)
+                placeholders = ", ".join("?" for _ in self.SAIDA_COLUMNS)
+                connection.execute(f"INSERT INTO saida_almoxarifado ({columns}) VALUES ({placeholders})", values)
+        except sqlite3.Error as error:
+            messagebox.showerror("Erro ao inserir", f"Não foi possível inserir o item.\n\n{error}")
+            return
+        self._load_saida_items()
+        self.new_saida_item()
+
+    def update_saida_item(self):
+        selected = self.saida_grid.selection()
+        if not selected:
+            messagebox.showinfo("Salvar edição", "Selecione um item para editar.")
+            return
+        required = ("data", "codigo", "descricao")
+        if any(not self.saida_vars[key].get().strip() for key in required):
+            messagebox.showwarning("Campos obrigatórios", "Preencha data, código e descrição.")
+            return
+        values = tuple(self.saida_vars[key].get().strip() for key in self.SAIDA_COLUMNS)
+        assignments = ", ".join(f"{column} = ?" for column in self.SAIDA_COLUMNS)
+        try:
+            with sqlite3.connect(self.database_path) as connection:
+                connection.execute(f"UPDATE saida_almoxarifado SET {assignments} WHERE id = ?",
+                                   (*values, int(selected[0])))
+        except sqlite3.Error as error:
+            messagebox.showerror("Erro ao atualizar", f"Não foi possível atualizar o item.\n\n{error}")
+            return
+        self._load_saida_items()
+        self.new_saida_item()
+
+    def delete_saida_item(self):
+        selected = self.saida_grid.selection()
+        if not selected:
+            messagebox.showinfo("Excluir item", "Selecione um item na lista.")
+            return
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("DELETE FROM saida_almoxarifado WHERE id = ?", (int(selected[0]),))
+        self._load_saida_items()
+        self.new_saida_item()
+
+    def _select_saida_row(self, _event):
+        selected = self.saida_grid.selection()
+        if not selected:
+            return
+        values = self.saida_grid.item(selected[0], "values")
+        for key, value in zip(self.SAIDA_COLUMNS, values):
+            self.saida_vars[key].set(value)
+
+    def _read_saida_txt_rows(self, file_path):
+        """Lê TXT de saída separado por ;, tab, | ou vírgula, com cabeçalho opcional."""
+        content = None
+        for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+            try:
+                content = Path(file_path).read_text(encoding=encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        if content is None:
+            raise ValueError("Não foi possível identificar a codificação do arquivo TXT.")
+
+        lines = [line for line in content.splitlines() if line.strip()]
+        if not lines:
+            raise ValueError("O arquivo TXT está vazio.")
+        try:
+            delimiter = csv.Sniffer().sniff("\n".join(lines[:10]), delimiters=";\t|,").delimiter
+        except csv.Error:
+            delimiter = ";"
+        rows = list(csv.reader(lines, delimiter=delimiter))
+        headers = [self._normalize_header(value) for value in rows[0]]
+        aliases = {
+            "DATA": "data", "CODIGO": "codigo", "DESCRICAO": "descricao",
+            "UN": "un", "UNIDADE": "un", "QTD": "qtd", "QUANTIDADE": "qtd",
+            "TURNO": "turno", "APLICACAO": "aplicacao", "REQUISITANTE": "requisitante",
+        }
+        indexes = {aliases[header]: position for position, header in enumerate(headers) if header in aliases}
+        has_header = all(field in indexes for field in ("data", "codigo", "descricao"))
+        data_rows = rows[1:] if has_header else rows
+        loaded_rows, skipped = [], 0
+        for row in data_rows:
+            if has_header:
+                values = tuple(row[indexes[field]].strip() if indexes.get(field, -1) < len(row) else ""
+                               for field in self.SAIDA_COLUMNS)
+            else:
+                values = tuple(value.strip() for value in row[:len(self.SAIDA_COLUMNS)])
+                values += ("",) * (len(self.SAIDA_COLUMNS) - len(values))
+            if not any(values):
+                continue
+            if not all(values[index].strip() for index in (0, 1, 2)):
+                skipped += 1
+                continue
+            loaded_rows.append(values)
+        return loaded_rows, skipped
+
+    def import_saida_txt(self):
+        file_path = filedialog.askopenfilename(
+            title="Selecionar arquivo TXT de saída de materiais",
+            filetypes=(("Arquivos TXT", "*.txt"), ("Todos os arquivos", "*.*")),
+        )
+        if not file_path:
+            return
+        try:
+            rows, skipped = self._read_saida_txt_rows(file_path)
+            if not rows:
+                messagebox.showwarning("Carga TXT", "Nenhum item válido foi encontrado no arquivo.")
+                return
+            columns = ", ".join(self.SAIDA_COLUMNS)
+            placeholders = ", ".join("?" for _ in self.SAIDA_COLUMNS)
+            query = f"INSERT INTO saida_almoxarifado ({columns}) VALUES ({placeholders})"
+            with sqlite3.connect(self.database_path) as connection:
+                connection.executemany(query, rows)
+        except (OSError, ValueError, csv.Error) as error:
+            messagebox.showerror("Carga TXT", f"Não foi possível carregar o arquivo.\n\n{error}")
+            return
+        self._load_saida_items()
+        message = f"{len(rows)} item(ns) carregado(s) no banco."
+        if skipped:
+            message += f"\n{skipped} linha(s) ignorada(s) por não conter data, código e descrição."
+        messagebox.showinfo("Carga TXT concluída", message)
 
     def _build_form(self, parent):
         box = tk.LabelFrame(parent, text="  Informações Gerais da Ordem de Serviço  ",
