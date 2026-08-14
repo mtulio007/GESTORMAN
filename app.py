@@ -1,5 +1,6 @@
 import os
 import csv
+import hashlib
 import sqlite3
 import unicodedata
 from pathlib import Path
@@ -38,6 +39,7 @@ OS_COLUMNS = (
     "prioridade", "especialidade", "descricao", "tecnico", "turno", "hora_inicio",
     "hora_final", "tempo_parada", "tempo_servico", "tempo_resposta", "situacao",
 )
+CODIGOS_COLUMNS = ("codigo", "descricao", "descricao_ingles")
 DATETIME_FORMAT = "%d/%m/%Y %H:%M:%S"
 DATETIME_FIELDS = ("hora_inicio", "hora_final")
 
@@ -152,6 +154,7 @@ class GestorMan(tk.Tk):
     ALMOX_COLUMNS = ALMOX_COLUMNS
     RECEBIMENTO_COLUMNS = RECEBIMENTO_COLUMNS
     SAIDA_COLUMNS = SAIDA_COLUMNS
+    CODIGOS_COLUMNS = CODIGOS_COLUMNS
 
     def __init__(self):
         super().__init__()
@@ -216,6 +219,14 @@ class GestorMan(tk.Tk):
                     requisitante TEXT
                 )
             """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS cadastro_codigos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    codigo TEXT NOT NULL UNIQUE,
+                    descricao TEXT NOT NULL,
+                    descricao_ingles TEXT
+                )
+            """)
 
     def _build_style(self):
         style = ttk.Style(self)
@@ -240,14 +251,16 @@ class GestorMan(tk.Tk):
         self.menu_area = tk.Frame(sidebar, bg="#1f3448")
         self.menu_area.pack(fill="both", expand=True, pady=4)
         self._menu_header("Cadastros", True, selected=True)
-        self._menu_subitem("Ordens de Serviços", self.show_os)
+        self._menu_subitem("Cadastro de Códigos", self.show_codigos)
         self._menu_subitem("Recebimento de Itens", self.show_almox_recebimento)
         self._menu_subitem("Saída de Itens", self.show_almox_saida)
         self._menu_subitem("Resumo", self.show_almox_resumo)
+        self._menu_header("Manutenção", True)
+        self._menu_subitem("Ordens de Serviços", self.show_os)
 
         self.main = tk.Frame(self, bg="#edf2f7")
         self.main.pack(side="left", fill="both", expand=True)
-        self.show_os()
+        self.show_codigos()
 
     def _menu_item(self, icon, text, command):
         tk.Button(self.menu_area, text=f" {icon}   {text}", command=command, anchor="w",
@@ -283,14 +296,262 @@ class GestorMan(tk.Tk):
         body.pack(fill="both", expand=True, padx=25, pady=20)
         return body
 
+    def _build_record_counter(self, parent):
+        """Mostra, no rodapé da tela, o total atualmente exibido na grade."""
+        self.record_counter = tk.StringVar(value="Registros cadastrados: 0")
+        footer = tk.Frame(parent, bg="#edf2f7")
+        footer.pack(side="bottom", fill="x", pady=(8, 0))
+        tk.Label(footer, textvariable=self.record_counter, bg="#edf2f7", fg="#64748b",
+                 font=("Segoe UI", 8)).pack(side="right")
+
+    def _set_record_counter(self, total):
+        if hasattr(self, "record_counter"):
+            self.record_counter.set(f"Registros cadastrados: {total}")
+
+    def _confirm_txt_import(self, table, screen_name):
+        """Pergunta como tratar dados já cadastrados antes de uma nova carga."""
+        with sqlite3.connect(self.database_path) as connection:
+            total = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        if not total:
+            return "append"
+        choice = messagebox.askyesnocancel(
+            "Dados já cadastrados",
+            f"A tela de {screen_name} já possui {total} registro(s).\n\n"
+            "Sim: limpar os dados existentes e carregar o TXT.\n"
+            "Não: manter os dados e carregar os novos registros após os existentes.\n"
+            "Cancelar: não realizar a carga.",
+            icon="warning",
+        )
+        if choice is None:
+            return None
+        return "replace" if choice else "append"
+
     def show_os(self):
         self._clear_main()
         body = self._page_header("Cadastro de Ordem de Serviço", "Manutenção  /  Ordem de Serviços")
         self._build_form(body)
         self._build_actions(body)
         self._build_table(body)
+        self._build_record_counter(body)
         self._load_os_items()
         self.new_os()
+
+    def show_codigos(self):
+        """Exibe o cadastro mestre de códigos de materiais."""
+        self._clear_main()
+        body = self._page_header("Cadastro de Códigos", "Cadastros  /  Códigos")
+        self._build_codigos_form(body)
+        self._build_codigos_actions(body)
+        self._build_codigos_table(body)
+        self._build_record_counter(body)
+        self._load_codigos()
+        self.new_codigo()
+
+    def _build_codigos_form(self, parent):
+        box = tk.LabelFrame(parent, text="  Informações do Código  ",
+                            bg="#eef4fa", fg="#28435e", font=("Segoe UI", 9, "bold"),
+                            padx=14, pady=12, bd=1, relief="groove")
+        box.pack(fill="x")
+        box.grid_columnconfigure(1, weight=1)
+        box.grid_columnconfigure(2, weight=1)
+        self.codigo_vars = {key: tk.StringVar() for key in self.CODIGOS_COLUMNS}
+        fields = (("Código", "codigo"), ("Descrição", "descricao"),
+                  ("Descrição Inglês", "descricao_ingles"))
+        for column, (label, key) in enumerate(fields):
+            cell = tk.Frame(box, bg="#eef4fa")
+            cell.grid(row=0, column=column, sticky="ew", padx=4, pady=4)
+            tk.Label(cell, text=label, bg="#eef4fa", fg="#38546e", anchor="w",
+                     font=("Segoe UI", 8)).pack(fill="x")
+            tk.Entry(cell, textvariable=self.codigo_vars[key], font=("Segoe UI", 9),
+                     relief="solid", bd=1).pack(fill="x", ipady=3)
+
+    def _build_codigos_actions(self, parent):
+        actions = tk.Frame(parent, bg="#edf2f7")
+        actions.pack(pady=16)
+        self._action(actions, "＋  Novo Código", self.new_codigo, "#ffffff", "#315a7c")
+        self._action(actions, "▣  Inserir", self.insert_codigo, "#1678bf", "white")
+        self._action(actions, "✓  Salvar edição", self.update_codigo, "#ffffff", "#315a7c")
+        self._action(actions, "⇧  Carga TXT", self.import_codigos_txt, "#ffffff", "#315a7c")
+        self._action(actions, "✕  Excluir", self.delete_codigo, "#ffffff", "#b23b3b")
+
+    def _build_codigos_table(self, parent):
+        search = tk.Frame(parent, bg="#edf2f7")
+        search.pack(fill="x", pady=(0, 8))
+        content = tk.Frame(search, bg="#edf2f7")
+        content.pack()
+        tk.Label(content, text="Pesquisar", bg="#edf2f7", fg="#38546e",
+                 font=("Segoe UI", 8, "bold")).pack(side="left", padx=(2, 8))
+        self.codigo_search = tk.StringVar()
+        self.codigo_search.trace_add("write", self.filter_codigos)
+        tk.Entry(content, textvariable=self.codigo_search, width=42, font=("Segoe UI", 9),
+                 relief="solid", bd=1).pack(side="left", ipady=3)
+
+        frame = tk.Frame(parent, bg="white", bd=1, relief="solid")
+        frame.pack(fill="both", expand=True)
+        self.codigos_grid = ttk.Treeview(frame, columns=self.CODIGOS_COLUMNS,
+                                         show="headings", selectmode="browse")
+        for key, title, width in (("codigo", "CÓDIGO", 180), ("descricao", "DESCRIÇÃO", 450),
+                                  ("descricao_ingles", "DESCRIÇÃO INGLÊS", 450)):
+            self.codigos_grid.heading(key, text=title)
+            self.codigos_grid.column(key, width=width, minwidth=120, anchor="w", stretch=True)
+        scroll_y = ttk.Scrollbar(frame, orient="vertical", command=self.codigos_grid.yview)
+        self.codigos_grid.configure(yscrollcommand=scroll_y.set)
+        self.codigos_grid.grid(row=0, column=0, sticky="nsew")
+        scroll_y.grid(row=0, column=1, sticky="ns")
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+        self.codigos_grid.bind("<<TreeviewSelect>>", self._select_codigo)
+
+    def _load_codigos(self):
+        for item in self.codigos_grid.get_children():
+            self.codigos_grid.delete(item)
+        term = self.codigo_search.get().strip()
+        query = "SELECT id, codigo, descricao, descricao_ingles FROM cadastro_codigos"
+        params = ()
+        if term:
+            query += " WHERE codigo LIKE ? OR descricao LIKE ? OR descricao_ingles LIKE ?"
+            params = (f"%{term}%",) * 3
+        query += " ORDER BY codigo"
+        with sqlite3.connect(self.database_path) as connection:
+            for row_id, *values in connection.execute(query, params):
+                self.codigos_grid.insert("", "end", iid=str(row_id), values=values)
+        self._set_record_counter(len(self.codigos_grid.get_children()))
+
+    def filter_codigos(self, *_args):
+        if hasattr(self, "codigos_grid"):
+            self._load_codigos()
+
+    def new_codigo(self):
+        for var in self.codigo_vars.values():
+            var.set("")
+        if hasattr(self, "codigos_grid"):
+            self.codigos_grid.selection_remove(self.codigos_grid.selection())
+
+    def _codigo_values(self):
+        values = tuple(self.codigo_vars[key].get().strip() for key in self.CODIGOS_COLUMNS)
+        if not values[0] or not values[1]:
+            messagebox.showwarning("Campos obrigatórios", "Preencha código e descrição.")
+            return None
+        return values
+
+    def insert_codigo(self):
+        values = self._codigo_values()
+        if not values:
+            return
+        try:
+            with sqlite3.connect(self.database_path) as connection:
+                connection.execute("INSERT INTO cadastro_codigos (codigo, descricao, descricao_ingles) VALUES (?, ?, ?)", values)
+        except sqlite3.IntegrityError:
+            messagebox.showwarning("Código duplicado", "Já existe um cadastro com este código.")
+            return
+        self._load_codigos()
+        self.new_codigo()
+
+    def update_codigo(self):
+        selected = self.codigos_grid.selection()
+        if not selected:
+            messagebox.showinfo("Salvar edição", "Selecione um código para editar.")
+            return
+        values = self._codigo_values()
+        if not values:
+            return
+        try:
+            with sqlite3.connect(self.database_path) as connection:
+                connection.execute("UPDATE cadastro_codigos SET codigo = ?, descricao = ?, descricao_ingles = ? WHERE id = ?",
+                                   (*values, int(selected[0])))
+        except sqlite3.IntegrityError:
+            messagebox.showwarning("Código duplicado", "Já existe um cadastro com este código.")
+            return
+        self._load_codigos()
+        self.new_codigo()
+
+    def delete_codigo(self):
+        selected = self.codigos_grid.selection()
+        if not selected:
+            messagebox.showinfo("Excluir código", "Selecione um código na lista.")
+            return
+        if not messagebox.askyesno("Excluir código", "Deseja excluir o código selecionado?"):
+            return
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("DELETE FROM cadastro_codigos WHERE id = ?", (int(selected[0]),))
+        self._load_codigos()
+        self.new_codigo()
+
+    def _select_codigo(self, _event):
+        selected = self.codigos_grid.selection()
+        if selected:
+            for key, value in zip(self.CODIGOS_COLUMNS, self.codigos_grid.item(selected[0], "values")):
+                self.codigo_vars[key].set(value)
+
+    def import_codigos_txt(self):
+        file_path = filedialog.askopenfilename(
+            title="Selecionar arquivo TXT de códigos",
+            filetypes=(("Arquivos TXT", "*.txt"), ("Todos os arquivos", "*.*")),
+        )
+        if not file_path:
+            return
+        try:
+            rows, skipped = self._read_codigos_txt_rows(file_path)
+            if not rows:
+                messagebox.showwarning("Carga TXT", "Nenhum código válido foi encontrado no arquivo.")
+                return
+            rows = tuple((codigo or self._codigo_provisorio(descricao), descricao, descricao_ingles)
+                         for codigo, descricao, descricao_ingles in rows)
+            mode = self._confirm_txt_import("cadastro_codigos", "Cadastro de Códigos")
+            if mode is None:
+                return
+            with sqlite3.connect(self.database_path) as connection:
+                if mode == "replace":
+                    connection.execute("DELETE FROM cadastro_codigos")
+                connection.executemany(
+                    "INSERT INTO cadastro_codigos (codigo, descricao, descricao_ingles) VALUES (?, ?, ?) "
+                    "ON CONFLICT(codigo) DO UPDATE SET descricao = excluded.descricao, descricao_ingles = excluded.descricao_ingles",
+                    rows,
+                )
+        except (OSError, ValueError, csv.Error) as error:
+            messagebox.showerror("Carga TXT", f"Não foi possível carregar o arquivo.\n\n{error}")
+            return
+        self._load_codigos()
+        message = f"{len(rows)} código(s) carregado(s) ou atualizado(s)."
+        if skipped:
+            message += f"\n{skipped} linha(s) ignorada(s) por não conter código e descrição."
+        messagebox.showinfo("Carga TXT concluída", message)
+
+    def _read_codigos_txt_rows(self, file_path):
+        content = None
+        for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+            try:
+                content = Path(file_path).read_text(encoding=encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        if content is None:
+            raise ValueError("Não foi possível identificar a codificação do arquivo TXT.")
+        lines = [line for line in content.splitlines() if line.strip()]
+        if not lines:
+            raise ValueError("O arquivo TXT está vazio.")
+        try:
+            delimiter = csv.Sniffer().sniff("\n".join(lines[:10]), delimiters=";\t|,").delimiter
+        except csv.Error:
+            delimiter = "\t"
+        rows = list(csv.reader(lines, delimiter=delimiter))
+        headers = [self._normalize_header(value) for value in rows[0]]
+        aliases = {"CODIGO": "codigo", "DESCRICAO": "descricao", "DESCRICAOINGLES": "descricao_ingles",
+                   "DESCRIPTIONENGLISH": "descricao_ingles"}
+        indexes = {aliases[header]: position for position, header in enumerate(headers) if header in aliases}
+        has_header = "descricao" in indexes
+        loaded, skipped = [], 0
+        for row in (rows[1:] if has_header else rows):
+            values = tuple(row[indexes[key]].strip() if has_header and indexes.get(key, -1) < len(row)
+                           else (row[position].strip() if position < len(row) else "")
+                           for position, key in enumerate(self.CODIGOS_COLUMNS))
+            if not any(values):
+                continue
+            if not values[1]:
+                skipped += 1
+                continue
+            loaded.append(values)
+        return loaded, skipped
 
     def show_almoxarifado(self):
         self._clear_main()
@@ -298,6 +559,7 @@ class GestorMan(tk.Tk):
         self._build_almox_form(body)
         self._build_almox_actions(body)
         self._build_almox_table(body)
+        self._build_record_counter(body)
         self._load_almox_items()
 
     def _build_almox_form(self, parent):
@@ -400,9 +662,21 @@ class GestorMan(tk.Tk):
                 a.codigo,
                 a.descricao,
                 a.descricao_ingles,
-                COALESCE(SUM(CAST(REPLACE(REPLACE(TRIM(r.qtd), '.', ''), ',', '.') AS REAL)), 0) as entradas,
-                COALESCE(SUM(CAST(REPLACE(REPLACE(TRIM(s.qtd), '.', ''), ',', '.') AS REAL)), 0) as saida,
-                (COALESCE(SUM(CAST(REPLACE(REPLACE(TRIM(r.qtd), '.', ''), ',', '.') AS REAL)), 0) - COALESCE(SUM(CAST(REPLACE(REPLACE(TRIM(s.qtd), '.', ''), ',', '.') AS REAL)), 0)) as saldo,
+                COALESCE((
+                    SELECT SUM(CAST(REPLACE(REPLACE(TRIM(r.qtd), '.', ''), ',', '.') AS REAL))
+                    FROM recebimento_almoxarifado r WHERE r.codigo = a.codigo
+                ), 0) as entradas,
+                COALESCE((
+                    SELECT SUM(CAST(REPLACE(REPLACE(TRIM(s.qtd), '.', ''), ',', '.') AS REAL))
+                    FROM saida_almoxarifado s WHERE s.codigo = a.codigo
+                ), 0) as saida,
+                (COALESCE((
+                    SELECT SUM(CAST(REPLACE(REPLACE(TRIM(r.qtd), '.', ''), ',', '.') AS REAL))
+                    FROM recebimento_almoxarifado r WHERE r.codigo = a.codigo
+                ), 0) - COALESCE((
+                    SELECT SUM(CAST(REPLACE(REPLACE(TRIM(s.qtd), '.', ''), ',', '.') AS REAL))
+                    FROM saida_almoxarifado s WHERE s.codigo = a.codigo
+                ), 0)) as saldo,
                 a.data_inventario,
                 a.responsavel,
                 a.lead_time,
@@ -416,8 +690,6 @@ class GestorMan(tk.Tk):
                 a.custo_medio,
                 a.custo_ttl
             FROM almoxarifado a
-            LEFT JOIN recebimento_almoxarifado r ON a.codigo = r.codigo
-            LEFT JOIN saida_almoxarifado s ON a.codigo = s.codigo
         """
         
         params = ()
@@ -426,7 +698,7 @@ class GestorMan(tk.Tk):
             query += f" WHERE {condition}"
             params = tuple(f"%{term}%" for _ in self.ALMOX_COLUMNS)
         
-        query += " GROUP BY a.id, a.codigo ORDER BY a.origem, a.codigo"
+        query += " ORDER BY a.origem, a.codigo"
         
         with sqlite3.connect(self.database_path) as connection:
             rows = connection.execute(query, params).fetchall()
@@ -456,6 +728,7 @@ class GestorMan(tk.Tk):
             # Aplica tag "negative" se o saldo for negativo
             tags = ("negative",) if saldo_value is not None and saldo_value < 0 else ()
             self.almox_grid.insert("", "end", iid=str(row_id), values=formatted_values, tags=tags)
+        self._set_record_counter(len(self.almox_grid.get_children()))
 
     def filter_almox_items(self, *_args):
         if hasattr(self, "almox_grid"):
@@ -524,6 +797,42 @@ class GestorMan(tk.Tk):
         text = unicodedata.normalize("NFKD", value).encode("ASCII", "ignore").decode()
         return "".join(character for character in text.upper() if character.isalnum())
 
+    @classmethod
+    def _codigo_provisorio(cls, descricao):
+        """Gera um código estável para que movimentações sem código possam ser conciliadas."""
+        descricao_normalizada = cls._normalize_header(descricao)
+        digest = hashlib.sha1(descricao_normalizada.encode("utf-8")).hexdigest()[:10].upper()
+        return f"SEM-CODIGO-{digest}"
+
+    def _preparar_codigos_importados(self, connection, rows, columns):
+        """Preenche códigos ausentes a partir da descrição antes de gravar movimentações.
+
+        A mesma descrição gera sempre o mesmo código técnico, permitindo que entradas e
+        saídas importadas em arquivos diferentes sejam consideradas no mesmo saldo.
+        """
+        codigo_index = columns.index("codigo")
+        descricao_index = columns.index("descricao")
+        prepared, pendentes = [], 0
+        for row in rows:
+            values = list(row)
+            codigo, descricao = values[codigo_index].strip(), values[descricao_index].strip()
+            if not codigo:
+                if descricao:
+                    codigo = self._codigo_provisorio(descricao)
+                    connection.execute(
+                        "INSERT INTO cadastro_codigos (codigo, descricao) VALUES (?, ?) "
+                        "ON CONFLICT(codigo) DO NOTHING", (codigo, descricao),
+                    )
+                else:
+                    # Sem código e sem descrição não existe chave para conciliação.
+                    # O identificador único conserva a linha para correção posterior.
+                    digest = hashlib.sha1("|".join(values).encode("utf-8")).hexdigest()[:10].upper()
+                    codigo = f"PENDENTE-{digest}"
+                    pendentes += 1
+                values[codigo_index] = codigo
+            prepared.append(tuple(values))
+        return prepared, pendentes
+
     def _read_txt_rows(self, file_path):
         """Lê TXT separado por ;, tab, | ou vírgula, com cabeçalho opcional."""
         content = None
@@ -562,7 +871,7 @@ class GestorMan(tk.Tk):
             "CUSTOTTL": "custo_ttl", "CUSTOTOTAL": "custo_ttl",
         }
         indexes = {aliases[header]: position for position, header in enumerate(headers) if header in aliases}
-        has_header = all(field in indexes for field in ("origem", "codigo", "descricao"))
+        has_header = all(field in indexes for field in ("origem", "descricao"))
         data_rows = rows[1:] if has_header else rows
         loaded_rows, skipped = [], 0
         for row in data_rows:
@@ -574,7 +883,7 @@ class GestorMan(tk.Tk):
                 values += ("",) * (len(self.ALMOX_COLUMNS) - len(values))
             if not any(values):
                 continue
-            if not all(values[index].strip() for index in (0, 1, 2)):
+            if not values[0].strip():
                 skipped += 1
                 continue
             loaded_rows.append(values)
@@ -592,12 +901,18 @@ class GestorMan(tk.Tk):
             if not rows:
                 messagebox.showwarning("Carga TXT", "Nenhum item válido foi encontrado no arquivo.")
                 return
+            mode = self._confirm_txt_import("almoxarifado", "Cadastro de Almoxarifado")
+            if mode is None:
+                return
             columns = ", ".join(self.ALMOX_COLUMNS)
             placeholders = ", ".join("?" for _ in self.ALMOX_COLUMNS)
             updates = ", ".join(f"{column} = excluded.{column}" for column in self.ALMOX_COLUMNS[2:])
             query = (f"INSERT INTO almoxarifado ({columns}) VALUES ({placeholders}) "
                      f"ON CONFLICT(origem, codigo) DO UPDATE SET {updates}")
             with sqlite3.connect(self.database_path) as connection:
+                if mode == "replace":
+                    connection.execute("DELETE FROM almoxarifado")
+                rows, pendentes = self._preparar_codigos_importados(connection, rows, self.ALMOX_COLUMNS)
                 connection.executemany(query, rows)
         except (OSError, ValueError, csv.Error) as error:
             messagebox.showerror("Carga TXT", f"Não foi possível carregar o arquivo.\n\n{error}")
@@ -605,7 +920,9 @@ class GestorMan(tk.Tk):
         self._load_almox_items()
         message = f"{len(rows)} item(ns) carregado(s) ou atualizado(s) no banco."
         if skipped:
-            message += f"\n{skipped} linha(s) ignorada(s) por não conter origem, código e descrição."
+            message += f"\n{skipped} linha(s) ignorada(s) por não conter origem."
+        if pendentes:
+            message += f"\n{pendentes} linha(s) sem código e descrição foi(ram) marcada(s) como pendente(s)."
         messagebox.showinfo("Carga TXT concluída", message)
 
     def _select_almox_row(self, _event):
@@ -622,6 +939,7 @@ class GestorMan(tk.Tk):
         self._build_recebimento_form(body)
         self._build_recebimento_actions(body)
         self._build_recebimento_table(body)
+        self._build_record_counter(body)
         self._load_recebimento_items()
         self.new_recebimento_item()
 
@@ -708,6 +1026,7 @@ class GestorMan(tk.Tk):
             rows = connection.execute(query, params).fetchall()
         for row_id, *values in rows:
             self.recebimento_grid.insert("", "end", iid=str(row_id), values=values)
+        self._set_record_counter(len(self.recebimento_grid.get_children()))
 
     def filter_recebimento_items(self, *_args):
         if hasattr(self, "recebimento_grid"):
@@ -782,6 +1101,25 @@ class GestorMan(tk.Tk):
         tk.Entry(search_content, textvariable=self.resumo_search, width=34, font=("Segoe UI", 8),
                  relief="solid", bd=1).pack(side="left", ipady=3)
 
+        totals = tk.Frame(body, bg="#edf2f7")
+        totals.pack(fill="x", pady=(0, 10))
+        totals_content = tk.Frame(totals, bg="#e4edf6", bd=1, relief="solid", padx=18, pady=7)
+        totals_content.pack(anchor="e")
+        self.resumo_total_vars = {
+            "entradas": tk.StringVar(value="+0"),
+            "saidas": tk.StringVar(value="+0"),
+            "saldo": tk.StringVar(value="+0"),
+        }
+        for label, key, color in (("ENTRADAS", "entradas", "#166534"),
+                                  ("SAÍDAS", "saidas", "#9a3412"),
+                                  ("SALDO", "saldo", "#0f4c81")):
+            item = tk.Frame(totals_content, bg="#e4edf6")
+            item.pack(side="left", padx=14)
+            tk.Label(item, text=label, bg="#e4edf6", fg="#64748b",
+                     font=("Segoe UI", 7, "bold")).pack(anchor="e")
+            tk.Label(item, textvariable=self.resumo_total_vars[key], bg="#e4edf6", fg=color,
+                     font=("Segoe UI", 11, "bold")).pack(anchor="e")
+
         frame = tk.Frame(body, bg="white", bd=1, relief="solid")
         frame.pack(fill="both", expand=True)
         columns = ("codigo", "descricao", "entradas", "saidas", "saldo")
@@ -802,6 +1140,7 @@ class GestorMan(tk.Tk):
         scroll_x.grid(row=1, column=0, sticky="ew")
         frame.grid_rowconfigure(0, weight=1)
         frame.grid_columnconfigure(0, weight=1)
+        self._build_record_counter(body)
         self._load_resumo_items()
 
     def _load_resumo_items(self, *_args):
@@ -837,6 +1176,7 @@ class GestorMan(tk.Tk):
         query += " ORDER BY c.codigo"
         with sqlite3.connect(self.database_path) as connection:
             rows = connection.execute(query, params).fetchall()
+        total_entradas = total_saidas = total_saldo = 0
         for codigo, descricao, entradas, saidas, saldo in rows:
             def format_qtd(value, signed=False):
                 value = float(value)
@@ -845,6 +1185,17 @@ class GestorMan(tk.Tk):
             self.resumo_grid.insert("", "end", values=(
                 codigo, descricao, format_qtd(entradas), format_qtd(saidas), format_qtd(saldo, signed=True)
             ), tags=("negative",) if saldo < 0 else ())
+            total_entradas += float(entradas)
+            total_saidas += float(saidas)
+            total_saldo += float(saldo)
+        if hasattr(self, "resumo_total_vars"):
+            def format_total(value):
+                formatted = f"{abs(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                return f"{'+' if value >= 0 else '-'}{formatted}"
+            self.resumo_total_vars["entradas"].set(format_total(total_entradas))
+            self.resumo_total_vars["saidas"].set(format_total(total_saidas))
+            self.resumo_total_vars["saldo"].set(format_total(total_saldo))
+        self._set_record_counter(len(self.resumo_grid.get_children()))
 
     def _select_recebimento_row(self, _event):
         selected = self.recebimento_grid.selection()
@@ -885,7 +1236,7 @@ class GestorMan(tk.Tk):
             "DATA_PROTOCOLO": "data_protocolo", "PROTOCOLO": "data_protocolo",
         }
         indexes = {aliases[header]: position for position, header in enumerate(headers) if header in aliases}
-        has_header = all(field in indexes for field in ("data_recebimento", "codigo", "descricao"))
+        has_header = all(field in indexes for field in ("data_recebimento", "descricao"))
         data_rows = rows[1:] if has_header else rows
         loaded_rows, skipped = [], 0
         for row in data_rows:
@@ -897,7 +1248,7 @@ class GestorMan(tk.Tk):
                 values += ("",) * (len(self.RECEBIMENTO_COLUMNS) - len(values))
             if not any(values):
                 continue
-            if not all(values[index].strip() for index in (0, 1, 2)):
+            if not values[0].strip():
                 skipped += 1
                 continue
             loaded_rows.append(values)
@@ -915,10 +1266,16 @@ class GestorMan(tk.Tk):
             if not rows:
                 messagebox.showwarning("Carga TXT", "Nenhum item válido foi encontrado no arquivo.")
                 return
+            mode = self._confirm_txt_import("recebimento_almoxarifado", "Recebimento de Itens")
+            if mode is None:
+                return
             columns = ", ".join(self.RECEBIMENTO_COLUMNS)
             placeholders = ", ".join("?" for _ in self.RECEBIMENTO_COLUMNS)
             query = f"INSERT INTO recebimento_almoxarifado ({columns}) VALUES ({placeholders})"
             with sqlite3.connect(self.database_path) as connection:
+                if mode == "replace":
+                    connection.execute("DELETE FROM recebimento_almoxarifado")
+                rows, pendentes = self._preparar_codigos_importados(connection, rows, self.RECEBIMENTO_COLUMNS)
                 connection.executemany(query, rows)
         except (OSError, ValueError, csv.Error) as error:
             messagebox.showerror("Carga TXT", f"Não foi possível carregar o arquivo.\n\n{error}")
@@ -926,7 +1283,9 @@ class GestorMan(tk.Tk):
         self._load_recebimento_items()
         message = f"{len(rows)} item(ns) carregado(s) no banco."
         if skipped:
-            message += f"\n{skipped} linha(s) ignorada(s) por não conter data, código e descrição."
+            message += f"\n{skipped} linha(s) ignorada(s) por não conter data."
+        if pendentes:
+            message += f"\n{pendentes} linha(s) sem código e descrição foi(ram) marcada(s) como pendente(s)."
         messagebox.showinfo("Carga TXT concluída", message)
 
     def show_almox_saida(self):
@@ -935,6 +1294,7 @@ class GestorMan(tk.Tk):
         self._build_saida_form(body)
         self._build_saida_actions(body)
         self._build_saida_table(body)
+        self._build_record_counter(body)
         self._load_saida_items()
         self.new_saida_item()
 
@@ -1021,6 +1381,7 @@ class GestorMan(tk.Tk):
             rows = connection.execute(query, params).fetchall()
         for row_id, *values in rows:
             self.saida_grid.insert("", "end", iid=str(row_id), values=values)
+        self._set_record_counter(len(self.saida_grid.get_children()))
 
     def filter_saida_items(self, *_args):
         if hasattr(self, "saida_grid"):
@@ -1114,7 +1475,7 @@ class GestorMan(tk.Tk):
             "TURNO": "turno", "APLICACAO": "aplicacao", "REQUISITANTE": "requisitante",
         }
         indexes = {aliases[header]: position for position, header in enumerate(headers) if header in aliases}
-        has_header = all(field in indexes for field in ("data", "codigo", "descricao"))
+        has_header = all(field in indexes for field in ("data", "descricao"))
         data_rows = rows[1:] if has_header else rows
         loaded_rows, skipped = [], 0
         for row in data_rows:
@@ -1126,7 +1487,7 @@ class GestorMan(tk.Tk):
                 values += ("",) * (len(self.SAIDA_COLUMNS) - len(values))
             if not any(values):
                 continue
-            if not all(values[index].strip() for index in (0, 1, 2)):
+            if not values[0].strip():
                 skipped += 1
                 continue
             loaded_rows.append(values)
@@ -1144,10 +1505,16 @@ class GestorMan(tk.Tk):
             if not rows:
                 messagebox.showwarning("Carga TXT", "Nenhum item válido foi encontrado no arquivo.")
                 return
+            mode = self._confirm_txt_import("saida_almoxarifado", "Saída de Itens")
+            if mode is None:
+                return
             columns = ", ".join(self.SAIDA_COLUMNS)
             placeholders = ", ".join("?" for _ in self.SAIDA_COLUMNS)
             query = f"INSERT INTO saida_almoxarifado ({columns}) VALUES ({placeholders})"
             with sqlite3.connect(self.database_path) as connection:
+                if mode == "replace":
+                    connection.execute("DELETE FROM saida_almoxarifado")
+                rows, pendentes = self._preparar_codigos_importados(connection, rows, self.SAIDA_COLUMNS)
                 connection.executemany(query, rows)
         except (OSError, ValueError, csv.Error) as error:
             messagebox.showerror("Carga TXT", f"Não foi possível carregar o arquivo.\n\n{error}")
@@ -1155,7 +1522,9 @@ class GestorMan(tk.Tk):
         self._load_saida_items()
         message = f"{len(rows)} item(ns) carregado(s) no banco."
         if skipped:
-            message += f"\n{skipped} linha(s) ignorada(s) por não conter data, código e descrição."
+            message += f"\n{skipped} linha(s) ignorada(s) por não conter data."
+        if pendentes:
+            message += f"\n{pendentes} linha(s) sem código e descrição foi(ram) marcada(s) como pendente(s)."
         messagebox.showinfo("Carga TXT concluída", message)
 
     def _build_form(self, parent):
@@ -1540,6 +1909,7 @@ class GestorMan(tk.Tk):
             rows = connection.execute(query, params).fetchall()
         for row_id, *values in rows:
             self.grid.insert("", "end", iid=str(row_id), values=values)
+        self._set_record_counter(len(self.grid.get_children()))
 
     def filter_os_items(self, *_args):
         if hasattr(self, "grid"):
@@ -1636,9 +2006,14 @@ class GestorMan(tk.Tk):
             if not rows:
                 messagebox.showwarning("Carga TXT", "Nenhuma Ordem de Serviço válida foi encontrada no arquivo.")
                 return
+            mode = self._confirm_txt_import("ordens_servico", "Ordens de Serviço")
+            if mode is None:
+                return
             columns = ", ".join(self.COLUMNS)
             placeholders = ", ".join("?" for _ in self.COLUMNS)
             with sqlite3.connect(self.database_path) as connection:
+                if mode == "replace":
+                    connection.execute("DELETE FROM ordens_servico")
                 connection.executemany(
                     f"INSERT INTO ordens_servico ({columns}) VALUES ({placeholders})", rows
                 )
