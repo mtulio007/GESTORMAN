@@ -1,2 +1,6 @@
-cd C:\Users\Comercial Pracafé\Desktop\PASTA MANUTENÇÃO\1. PCM\7. Projetos\GestorMan
-py app.py
+@echo off
+setlocal
+cd /d "%~dp0"
+".venv\Scripts\python.exe" "app.py"
+if errorlevel 1 pause
+endlocal

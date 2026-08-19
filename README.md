@@ -14,7 +14,10 @@ Aplicação desktop em Python/Tkinter para gestão de manutenção.
 Requer Python com Tkinter e não possui dependências externas.
 
 ```powershell
-py app.py
+.\.venv\Scripts\python.exe .\app.py
 ```
+
+Ou execute `app.bat` com um duplo clique. O ambiente virtual `.venv` usa
+Python 3.13 e a aplicação não possui dependências externas para instalar.
 
 Os bancos SQLite são criados e atualizados automaticamente ao abrir a aplicação.

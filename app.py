@@ -3,10 +3,13 @@ import csv
 import hashlib
 import sqlite3
 import unicodedata
+import zipfile
 from pathlib import Path
+from xml.sax.saxutils import escape
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-from datetime import datetime
+from tkinter import font as tkfont
+from datetime import datetime, timedelta
 
 
 # Algumas instalações do Python para Windows não conseguem descobrir Tcl/Tk
@@ -160,7 +163,7 @@ class GestorMan(tk.Tk):
         super().__init__()
         self.database_path = Path(__file__).with_name("gestorman.db")
         self._init_database()
-        self.title("GestorMan | Gestão de Manutenção")
+        self.title("GestorMan | Gestão de Manutenção v.001")
         self.geometry("1280x760")
         self.minsize(1020, 620)
         self.state("zoomed")
@@ -227,6 +230,16 @@ class GestorMan(tk.Tk):
                     descricao_ingles TEXT
                 )
             """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS acompanhamento_pedidos (
+                    codigo TEXT PRIMARY KEY,
+                    lead_time REAL,
+                    media_consumo REAL,
+                    ponto_pedido REAL,
+                    ressuprimento TEXT,
+                    status TEXT NOT NULL DEFAULT 'NORMAL'
+                )
+            """)
 
     def _build_style(self):
         style = ttk.Style(self)
@@ -245,18 +258,22 @@ class GestorMan(tk.Tk):
 
         tk.Label(sidebar, text="GESTORMAN", bg="#193044", fg="white", anchor="w",
                  font=("Segoe UI", 14, "bold"), padx=22, pady=16).pack(fill="x")
-        tk.Label(sidebar, text="GESTÃO DE MANUTENÇÃO", bg="#193044", fg="#9eb5c8",
+        tk.Label(sidebar, text="GESTÃO DE ESTOQUE", bg="#193044", fg="#9eb5c8",
                  anchor="w", font=("Segoe UI", 7), padx=23).pack(fill="x", pady=(0, 14))
 
         self.menu_area = tk.Frame(sidebar, bg="#1f3448")
         self.menu_area.pack(fill="both", expand=True, pady=4)
-        self._menu_header("Cadastros", True, selected=True)
-        self._menu_subitem("Cadastro de Códigos", self.show_codigos)
-        self._menu_subitem("Recebimento de Itens", self.show_almox_recebimento)
-        self._menu_subitem("Saída de Itens", self.show_almox_saida)
-        self._menu_subitem("Resumo", self.show_almox_resumo)
-        self._menu_header("Manutenção", True)
-        self._menu_subitem("Ordens de Serviços", self.show_os)
+        tk.Label(sidebar, text="M@rcoSoft Alrights Reserved.", bg="#1f3448", fg="white",
+                 anchor="center", font=("Segoe UI", 7)).pack(side="bottom", fill="x", pady=(8, 14))
+        self.menu_sections = {}
+        almoxarifado_menu = self._menu_header("Almoxarifado", "almoxarifado", expanded=False)
+        self._menu_subitem(almoxarifado_menu, "Cadastro de Códigos", self.show_codigos)
+        self._menu_subitem(almoxarifado_menu, "Recebimento de Itens", self.show_almox_recebimento)
+        self._menu_subitem(almoxarifado_menu, "Saída de Itens", self.show_almox_saida)
+        self._menu_subitem(almoxarifado_menu, "Resumo", self.show_almox_resumo)
+        self._menu_subitem(almoxarifado_menu, "Acompanhamento de Pedidos", self.show_acompanhamento_pedidos)
+        manutencao_menu = self._menu_header("Manutenção", "manutencao", expanded=False)
+        self._menu_subitem(manutencao_menu, "Ordens de Serviços", self.show_os)
 
         self.main = tk.Frame(self, bg="#edf2f7")
         self.main.pack(side="left", fill="both", expand=True)
@@ -268,14 +285,38 @@ class GestorMan(tk.Tk):
                   activeforeground="white", fg="#d5e3ef", font=("Segoe UI", 9),
                   padx=17, pady=8).pack(fill="x")
 
-    def _menu_header(self, text, expanded, selected=False):
-        mark = "⌄" if expanded else "›"
-        bg = "#1f3448"
-        tk.Label(self.menu_area, text=f" {mark}   {text}", anchor="w", bg=bg, fg="white",
-                 font=("Segoe UI", 10, "bold"), padx=18, pady=8).pack(fill="x")
+    def _menu_header(self, text, key, expanded=True):
+        """Cria uma seção retrátil da barra lateral e retorna o contêiner de seus itens."""
+        section = tk.Frame(self.menu_area, bg="#1f3448")
+        section.pack(fill="x")
+        header = tk.Button(section, anchor="w", bd=0, relief="flat", bg="#1f3448",
+                           activebackground="#2e4b64", activeforeground="white", fg="white",
+                           font=("Segoe UI", 10, "bold"), padx=18, pady=8, cursor="hand2",
+                           command=lambda: self._toggle_menu_section(key))
+        header.pack(fill="x")
+        submenu = tk.Frame(section, bg="#1f3448")
+        if expanded:
+            submenu.pack(fill="x")
+        self.menu_sections[key] = {"text": text, "header": header, "submenu": submenu, "expanded": expanded}
+        self._update_menu_header(key)
+        return submenu
 
-    def _menu_subitem(self, text, command):
-        tk.Button(self.menu_area, text=text, command=command, anchor="w", bd=0,
+    def _toggle_menu_section(self, key):
+        section = self.menu_sections[key]
+        section["expanded"] = not section["expanded"]
+        if section["expanded"]:
+            section["submenu"].pack(fill="x")
+        else:
+            section["submenu"].pack_forget()
+        self._update_menu_header(key)
+
+    def _update_menu_header(self, key):
+        section = self.menu_sections[key]
+        mark = "⌄" if section["expanded"] else "›"
+        section["header"].configure(text=f" {mark}   {section['text']}")
+
+    def _menu_subitem(self, parent, text, command):
+        tk.Button(parent, text=text, command=command, anchor="w", bd=0,
                   relief="flat", bg="#1f3448", activebackground="#2e4b64",
                   activeforeground="white", fg="#b9c9d7", font=("Segoe UI", 8),
                   padx=32, pady=7, cursor="hand2").pack(fill="x")
@@ -307,6 +348,19 @@ class GestorMan(tk.Tk):
     def _set_record_counter(self, total):
         if hasattr(self, "record_counter"):
             self.record_counter.set(f"Registros cadastrados: {total}")
+
+    @staticmethod
+    def _auto_fit_tree_columns(grid, columns):
+        """Ajusta as colunas ao maior conteúdo visível, incluindo o cabeçalho."""
+        measure = tkfont.Font(font=("Segoe UI", 8))
+        limits = {"descricao": 420, "aplicacao": 280, "requisitante": 220, "fornecedor": 220}
+        for column in columns:
+            heading = str(grid.heading(column, "text")).replace("\n", " ")
+            width = measure.measure(heading) + 28
+            for item_id in grid.get_children():
+                value = str(grid.set(item_id, column))
+                width = max(width, measure.measure(value) + 24)
+            grid.column(column, width=max(65, min(width, limits.get(column, 180))))
 
     def _confirm_txt_import(self, table, screen_name):
         """Pergunta como tratar dados já cadastrados antes de uma nova carga."""
@@ -470,7 +524,7 @@ class GestorMan(tk.Tk):
         if not selected:
             messagebox.showinfo("Excluir código", "Selecione um código na lista.")
             return
-        if not messagebox.askyesno("Excluir código", "Deseja excluir o código selecionado?"):
+        if not messagebox.askyesno("Excluir código", "Deseja mesmo excluir o registro?"):
             return
         with sqlite3.connect(self.database_path) as connection:
             connection.execute("DELETE FROM cadastro_codigos WHERE id = ?", (int(selected[0]),))
@@ -578,8 +632,8 @@ class GestorMan(tk.Tk):
             ("Descrição Inglês", "descricao_ingles"), ("Entradas", "entradas"),
             ("Saída", "saida"), ("Saldo", "saldo"), ("Data Inventário", "data_inventario"),
             ("Responsável", "responsavel"), ("Lead Time (dias)", "lead_time"),
-            ("Média Consumo", "media_consumo"), ("Estoque Mínimo", "estoque_minimo"),
-            ("Estoque Máximo", "estoque_maximo"), ("Est. Segurança", "est_seguranca"),
+            ("Média Consumo", "media_consumo"), ("Est. Inicial", "estoque_minimo"),
+            ("Est. Final", "estoque_maximo"), ("Est. Segurança", "est_seguranca"),
             ("Ponto Pedido", "ponto_pedido"), ("Ressuprimento", "ressuprimento"),
             ("Status", "status"), ("Custo Médio", "custo_medio"), ("Custo TTL", "custo_ttl"),
         ]
@@ -626,7 +680,7 @@ class GestorMan(tk.Tk):
         frame.pack(fill="both", expand=True)
         headings = ("ORIGEM", "CÓDIGO", "DESCRIÇÃO", "DESCRIÇÃO INGLÊS", "ENTRADAS",
                 "SAÍDA", "SALDO", "DATA INVENTÁRIO", "RESPONSÁVEL", "LEAD TIME (DIAS)",
-                "MÉDIA CONSUMO", "ESTOQUE MÍNIMO", "ESTOQUE MÁXIMO", "EST. SEGURANÇA",
+                "MÉDIA CONSUMO", "EST. INICIAL", "EST. FINAL", "EST. SEGURANÇA",
                 "PONTO PEDIDO", "RESSUPRIMENTO", "STATUS", "CUSTO MÉDIO", "CUSTO TTL")
         widths = (120, 100, 230, 180, 90, 80, 80, 110, 130, 95, 100, 100, 100, 105, 95, 110, 90, 110, 100)
         self.almox_grid = ttk.Treeview(frame, columns=self.ALMOX_COLUMNS, show="headings", selectmode="browse")
@@ -723,6 +777,8 @@ class GestorMan(tk.Tk):
                             formatted_values.append("+0")
                         else:
                             formatted_values.append("0")
+                elif idx in (11, 12, 13):  # est. inicial, final e segurança
+                    formatted_values.append(str(int(self._pedido_numero(val))) if str(val or "").strip() else "")
                 else:
                     formatted_values.append(str(val) if val else "")
             # Aplica tag "negative" se o saldo for negativo
@@ -785,6 +841,8 @@ class GestorMan(tk.Tk):
         selected = self.almox_grid.selection()
         if not selected:
             messagebox.showinfo("Excluir item", "Selecione um item na lista.")
+            return
+        if not messagebox.askyesno("Excluir item", "Deseja mesmo excluir o registro?"):
             return
         with sqlite3.connect(self.database_path) as connection:
             connection.execute("DELETE FROM almoxarifado WHERE id = ?", (int(selected[0]),))
@@ -936,45 +994,16 @@ class GestorMan(tk.Tk):
     def show_almox_recebimento(self):
         self._clear_main()
         body = self._page_header("Recebimento de Itens de Almoxarifado", "Cadastros  /  Almoxarifado  /  Recebimento")
-        self._build_recebimento_form(body)
         self._build_recebimento_actions(body)
         self._build_recebimento_table(body)
         self._build_record_counter(body)
         self._load_recebimento_items()
-        self.new_recebimento_item()
-
-    def _build_recebimento_form(self, parent):
-        box = tk.LabelFrame(parent, text="  Dados de Recebimento  ",
-                            bg="#eef4fa", fg="#28435e", font=("Segoe UI", 9, "bold"),
-                            padx=14, pady=12, bd=1, relief="groove")
-        box.pack(fill="x")
-        box.grid_columnconfigure(0, weight=1)
-        box.grid_columnconfigure(1, weight=1)
-        box.grid_columnconfigure(2, weight=1)
-        box.grid_columnconfigure(3, weight=1)
-
-        fields = [
-            ("Data Recebimento", "data_recebimento"), ("Código", "codigo"), 
-            ("Descrição", "descricao"), ("Unidade", "und"),
-            ("Quantidade", "qtd"), ("Fornecedor", "fornecedor"), 
-            ("Nº Nota Fiscal", "num_nota_fiscal"), ("Data / Protocolo", "data_protocolo"),
-        ]
-        self.recebimento_vars = {key: tk.StringVar() for _, key in fields}
-        for idx, (label, key) in enumerate(fields):
-            row, col = divmod(idx, 4)
-            cell = tk.Frame(box, bg="#eef4fa")
-            cell.grid(row=row, column=col, sticky="ew", padx=4, pady=4)
-            tk.Label(cell, text=label, bg="#eef4fa", fg="#38546e", anchor="w",
-                     font=("Segoe UI", 7)).pack(fill="x")
-            tk.Entry(cell, textvariable=self.recebimento_vars[key], font=("Segoe UI", 8),
-                     relief="solid", bd=1).pack(fill="x", ipady=2)
 
     def _build_recebimento_actions(self, parent):
         actions = tk.Frame(parent, bg="#edf2f7")
         actions.pack(pady=16)
+        self._action(actions, "Salvar novos/edições", self.save_recebimento_items, "#ffffff", "#27835c")
         self._action(actions, "＋  Novo Recebimento", self.new_recebimento_item, "#ffffff", "#315a7c")
-        self._action(actions, "▣  Inserir", self.insert_recebimento_item, "#1678bf", "white")
-        self._action(actions, "✓  Salvar edição", self.update_recebimento_item, "#ffffff", "#315a7c")
         self._action(actions, "⇧  Carga TXT", self.import_recebimento_txt, "#ffffff", "#315a7c")
         self._action(actions, "✕  Excluir", self.delete_recebimento_item, "#ffffff", "#b23b3b")
 
@@ -1007,7 +1036,11 @@ class GestorMan(tk.Tk):
         scroll_x.grid(row=1, column=0, sticky="ew")
         frame.grid_rowconfigure(0, weight=1)
         frame.grid_columnconfigure(0, weight=1)
-        self.recebimento_grid.bind("<<TreeviewSelect>>", self._select_recebimento_row)
+        self._new_recebimento_rows = {}
+        self._edited_recebimento_rows = {}
+        self._new_recebimento_sequence = 0
+        self.recebimento_grid.bind("<Double-1>", self._edit_recebimento_cell)
+        self.recebimento_grid.bind("<F2>", self._edit_selected_recebimento_cell)
 
     def _load_recebimento_items(self):
         """Consulta no SQLite os itens de recebimento que atendem ao texto pesquisado."""
@@ -1021,11 +1054,16 @@ class GestorMan(tk.Tk):
             condition = " OR ".join(f"{column} LIKE ?" for column in self.RECEBIMENTO_COLUMNS)
             query += f" WHERE {condition}"
             params = tuple(f"%{term}%" for _ in self.RECEBIMENTO_COLUMNS)
-        query += " ORDER BY data_recebimento DESC"
+        # Registros novos ficam sempre na primeira linha, logo abaixo do cabeçalho.
+        query += " ORDER BY id DESC"
         with sqlite3.connect(self.database_path) as connection:
             rows = connection.execute(query, params).fetchall()
         for row_id, *values in rows:
+            values = self._edited_recebimento_rows.get(str(row_id), values)
             self.recebimento_grid.insert("", "end", iid=str(row_id), values=values)
+        for item_id, values in getattr(self, "_new_recebimento_rows", {}).items():
+            self.recebimento_grid.insert("", 0, iid=item_id, values=values, tags=("novo_recebimento",))
+        self._auto_fit_tree_columns(self.recebimento_grid, self.RECEBIMENTO_COLUMNS)
         self._set_record_counter(len(self.recebimento_grid.get_children()))
 
     def filter_recebimento_items(self, *_args):
@@ -1033,78 +1071,155 @@ class GestorMan(tk.Tk):
             self._load_recebimento_items()
 
     def new_recebimento_item(self):
-        for var in self.recebimento_vars.values():
-            var.set("")
-        self.recebimento_grid.selection_remove(self.recebimento_grid.selection())
+        """Inclui uma linha editável no topo, preenchida com data e hora atuais."""
+        self._new_recebimento_sequence += 1
+        item_id = f"novo_recebimento_{self._new_recebimento_sequence}"
+        values = [""] * len(self.RECEBIMENTO_COLUMNS)
+        values[0] = datetime.now().strftime("%d/%m/%Y")
+        self._new_recebimento_rows[item_id] = values
+        self.recebimento_grid.insert("", 0, iid=item_id, values=values, tags=("novo_recebimento",))
+        self.recebimento_grid.selection_set(item_id)
+        self.recebimento_grid.focus(item_id)
+        self.recebimento_grid.see(item_id)
+        self._auto_fit_tree_columns(self.recebimento_grid, self.RECEBIMENTO_COLUMNS)
+        self.after_idle(lambda: self._open_recebimento_cell_editor(item_id, "#2"))
 
-    def insert_recebimento_item(self):
-        required = ("data_recebimento", "codigo", "descricao")
-        if any(not self.recebimento_vars[key].get().strip() for key in required):
-            messagebox.showwarning("Campos obrigatórios", "Preencha data de recebimento, código e descrição.")
+    def save_recebimento_items(self):
+        """Grava de uma vez as novas linhas e as edicoes pendentes."""
+        new_rows = list(self._new_recebimento_rows.items())
+        incomplete = [item_id for item_id, values in new_rows if not values[1] or not values[2]]
+        if incomplete:
+            messagebox.showwarning(
+                "Salvar registros",
+                "Preencha codigo e descricao em todos os novos recebimentos antes de salvar.",
+            )
+            self.recebimento_grid.selection_set(incomplete[0])
+            self.recebimento_grid.focus(incomplete[0])
+            self.recebimento_grid.see(incomplete[0])
             return
-        values = tuple(self.recebimento_vars[key].get().strip() for key in self.RECEBIMENTO_COLUMNS)
+        if not new_rows and not self._edited_recebimento_rows:
+            messagebox.showinfo("Salvar registros", "Nao ha registros novos ou alteracoes para salvar.")
+            return
         try:
             with sqlite3.connect(self.database_path) as connection:
                 columns = ", ".join(self.RECEBIMENTO_COLUMNS)
                 placeholders = ", ".join("?" for _ in self.RECEBIMENTO_COLUMNS)
-                connection.execute(f"INSERT INTO recebimento_almoxarifado ({columns}) VALUES ({placeholders})", values)
+                connection.executemany(
+                    f"INSERT INTO recebimento_almoxarifado ({columns}) VALUES ({placeholders})",
+                    [values for _item_id, values in new_rows],
+                )
+                assignments = ", ".join(f"{column} = ?" for column in self.RECEBIMENTO_COLUMNS)
+                connection.executemany(
+                    f"UPDATE recebimento_almoxarifado SET {assignments} WHERE id = ?",
+                    [tuple(values) + (int(item_id),) for item_id, values in self._edited_recebimento_rows.items()],
+                )
         except sqlite3.Error as error:
-            messagebox.showerror("Erro ao inserir", f"Não foi possível inserir o item.\n\n{error}")
+            messagebox.showerror("Erro ao salvar", f"Nao foi possivel salvar os registros.\n\n{error}")
             return
+        saved_total = len(new_rows) + len(self._edited_recebimento_rows)
+        self._new_recebimento_rows.clear()
+        self._edited_recebimento_rows.clear()
         self._load_recebimento_items()
-        self.new_recebimento_item()
-
-    def update_recebimento_item(self):
-        selected = self.recebimento_grid.selection()
-        if not selected:
-            messagebox.showinfo("Salvar edição", "Selecione um item para editar.")
-            return
-        required = ("data_recebimento", "codigo", "descricao")
-        if any(not self.recebimento_vars[key].get().strip() for key in required):
-            messagebox.showwarning("Campos obrigatórios", "Preencha data de recebimento, código e descrição.")
-            return
-        values = tuple(self.recebimento_vars[key].get().strip() for key in self.RECEBIMENTO_COLUMNS)
-        assignments = ", ".join(f"{column} = ?" for column in self.RECEBIMENTO_COLUMNS)
-        try:
-            with sqlite3.connect(self.database_path) as connection:
-                connection.execute(f"UPDATE recebimento_almoxarifado SET {assignments} WHERE id = ?",
-                                   (*values, int(selected[0])))
-        except sqlite3.Error as error:
-            messagebox.showerror("Erro ao atualizar", f"Não foi possível atualizar o item.\n\n{error}")
-            return
-        self._load_recebimento_items()
-        self.new_recebimento_item()
+        messagebox.showinfo("Salvar registros", f"{saved_total} registro(s) salvo(s) com sucesso.")
 
     def delete_recebimento_item(self):
         selected = self.recebimento_grid.selection()
         if not selected:
             messagebox.showinfo("Excluir item", "Selecione um item na lista.")
             return
+        item_id = selected[0]
+        if item_id in self._new_recebimento_rows:
+            self._new_recebimento_rows.pop(item_id, None)
+            self.recebimento_grid.delete(item_id)
+            self._set_record_counter(len(self.recebimento_grid.get_children()))
+            return
+        if not messagebox.askyesno("Excluir item", "Deseja mesmo excluir o registro?"):
+            return
         with sqlite3.connect(self.database_path) as connection:
-            connection.execute("DELETE FROM recebimento_almoxarifado WHERE id = ?", (int(selected[0]),))
+            connection.execute("DELETE FROM recebimento_almoxarifado WHERE id = ?", (int(item_id),))
+        self._edited_recebimento_rows.pop(item_id, None)
         self._load_recebimento_items()
-        self.new_recebimento_item()
+
+    def _edit_recebimento_cell(self, event):
+        if self.recebimento_grid.identify_region(event.x, event.y) != "cell":
+            return
+        item_id = self.recebimento_grid.identify_row(event.y)
+        column = self.recebimento_grid.identify_column(event.x)
+        if item_id and column:
+            self._open_recebimento_cell_editor(item_id, column)
+
+    def _edit_selected_recebimento_cell(self, _event):
+        selected = self.recebimento_grid.selection()
+        if selected:
+            self._open_recebimento_cell_editor(selected[0], "#1")
+        return "break"
+
+    def _open_recebimento_cell_editor(self, item_id, column):
+        bbox = self.recebimento_grid.bbox(item_id, column)
+        if not bbox:
+            return
+        index = int(column[1:]) - 1
+        x, y, width, height = bbox
+        editor = tk.Entry(self.recebimento_grid, font=("Segoe UI", 8))
+        editor.insert(0, self.recebimento_grid.item(item_id, "values")[index])
+        editor.place(x=x, y=y, width=width, height=height)
+        editor.focus_set()
+        editor.select_range(0, "end")
+        editor.bind("<Return>", lambda _event: self._save_recebimento_cell_and_advance(item_id, index, editor))
+        editor.bind("<FocusOut>", lambda _event: self._save_recebimento_cell(item_id, index, editor))
+        editor.bind("<Escape>", lambda _event: editor.destroy())
+
+    def _save_recebimento_cell_and_advance(self, item_id, index, editor):
+        """Salva a célula atual e leva o cursor à próxima coluna com Enter."""
+        saved_id = self._save_recebimento_cell(item_id, index, editor)
+        next_index = index + 1
+        if saved_id and next_index < len(self.RECEBIMENTO_COLUMNS):
+            self.after_idle(
+                lambda: self._open_recebimento_cell_editor(saved_id, f"#{next_index + 1}")
+            )
+        return "break"
+
+    def _save_recebimento_cell(self, item_id, index, editor):
+        if not editor.winfo_exists():
+            return
+        value = editor.get().strip()
+        editor.destroy()
+        values = list(self.recebimento_grid.item(item_id, "values"))
+        values[index] = value
+
+        if item_id in self._new_recebimento_rows:
+            self._new_recebimento_rows[item_id] = values
+            self.recebimento_grid.item(item_id, values=values)
+            self._auto_fit_tree_columns(self.recebimento_grid, self.RECEBIMENTO_COLUMNS)
+            return item_id
+
+        self._edited_recebimento_rows[item_id] = values
+        self.recebimento_grid.item(item_id, values=values)
+        self._auto_fit_tree_columns(self.recebimento_grid, self.RECEBIMENTO_COLUMNS)
+        return item_id
 
     def show_almox_resumo(self):
         """Exibe o saldo consolidado de entradas e saídas por item."""
         self._clear_main()
         body = self._page_header("Resumo de Movimentação de Itens", "Cadastros  /  Almoxarifado  /  Resumo")
 
-        search = tk.Frame(body, bg="#edf2f7")
-        search.pack(fill="x", pady=(0, 8))
-        search_content = tk.Frame(search, bg="#edf2f7")
-        search_content.pack()
+        summary_bar = tk.Frame(body, bg="#edf2f7")
+        summary_bar.pack(fill="x", pady=(0, 10))
+        search_content = tk.Frame(summary_bar, bg="#edf2f7")
+        search_content.pack(side="left", anchor="w")
         tk.Label(search_content, text="Pesquisar", bg="#edf2f7", fg="#38546e",
                  font=("Segoe UI", 8, "bold")).pack(side="left", padx=(2, 8))
         self.resumo_search = tk.StringVar()
         self.resumo_search.trace_add("write", self._load_resumo_items)
         tk.Entry(search_content, textvariable=self.resumo_search, width=34, font=("Segoe UI", 8),
                  relief="solid", bd=1).pack(side="left", ipady=3)
+        tk.Button(search_content, text="Baixar Excel", command=self.export_resumo_excel,
+                  bg="#1678bf", activebackground="#0f5f99", activeforeground="white",
+                  fg="white", bd=0, font=("Segoe UI", 8, "bold"), cursor="hand2",
+                  padx=12, pady=5).pack(side="left", padx=(10, 0))
 
-        totals = tk.Frame(body, bg="#edf2f7")
-        totals.pack(fill="x", pady=(0, 10))
-        totals_content = tk.Frame(totals, bg="#e4edf6", bd=1, relief="solid", padx=18, pady=7)
-        totals_content.pack(anchor="e")
+        totals_content = tk.Frame(summary_bar, bg="#e4edf6", bd=1, relief="solid", padx=18, pady=7)
+        totals_content.pack(side="right", anchor="e")
         self.resumo_total_vars = {
             "entradas": tk.StringVar(value="+0"),
             "saidas": tk.StringVar(value="+0"),
@@ -1143,6 +1258,60 @@ class GestorMan(tk.Tk):
         self._build_record_counter(body)
         self._load_resumo_items()
 
+    def export_resumo_excel(self):
+        """Exporta para Excel exatamente os dados atualmente exibidos no resumo."""
+        if not hasattr(self, "resumo_grid"):
+            return
+        rows = [self.resumo_grid.item(item, "values") for item in self.resumo_grid.get_children()]
+        if not rows:
+            messagebox.showinfo("Baixar Excel", "N\u00e3o h\u00e1 dados para exportar.")
+            return
+        filename = f"resumo_movimentacao_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+        file_path = filedialog.asksaveasfilename(
+            title="Salvar resumo em Excel", initialfile=filename,
+            defaultextension=".xlsx", filetypes=[("Arquivo Excel", "*.xlsx")],
+        )
+        if not file_path:
+            return
+
+        headings = ("C\u00d3DIGO", "DESCRI\u00c7\u00c3O", "ENTRADAS", "SA\u00cdDAS", "SALDO")
+        total_values = (
+            "TOTAIS", "",
+            self.resumo_total_vars["entradas"].get(),
+            self.resumo_total_vars["saidas"].get(),
+            self.resumo_total_vars["saldo"].get(),
+        )
+
+        def cell(value, style=0):
+            return f'<c t="inlineStr" s="{style}"><is><t>{escape(str(value))}</t></is></c>'
+
+        sheet_rows = [
+            f'<row r="1">{"".join(cell(value, 1) for value in headings)}</row>'
+        ]
+        for index, row in enumerate(rows, start=2):
+            sheet_rows.append(f'<row r="{index}">{"".join(cell(value) for value in row)}</row>')
+        sheet_rows.append(
+            f'<row r="{len(rows) + 2}">{"".join(cell(value, 1) for value in total_values)}</row>'
+        )
+        worksheet = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<cols><col min="1" max="1" width="18" customWidth="1"/><col min="2" max="2" width="55" customWidth="1"/><col min="3" max="5" width="16" customWidth="1"/></cols>
+<sheetData>""" + "".join(sheet_rows) + "</sheetData></worksheet>"
+        styles = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="2"><xf fontId="0" fillId="0" borderId="0" xfId="0"/><xf fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs></styleSheet>"""
+        try:
+            with zipfile.ZipFile(file_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("[Content_Types].xml", """<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>""")
+                archive.writestr("_rels/.rels", """<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>""")
+                archive.writestr("xl/workbook.xml", """<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Resumo" sheetId="1" r:id="rId1"/></sheets></workbook>""")
+                archive.writestr("xl/_rels/workbook.xml.rels", """<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>""")
+                archive.writestr("xl/worksheets/sheet1.xml", worksheet)
+                archive.writestr("xl/styles.xml", styles)
+        except (OSError, zipfile.BadZipFile) as error:
+            messagebox.showerror("Baixar Excel", f"N\u00e3o foi poss\u00edvel criar o arquivo.\n\n{error}")
+            return
+        messagebox.showinfo("Baixar Excel", "Arquivo Excel criado com sucesso.")
+
     def _load_resumo_items(self, *_args):
         """Carrega entradas, saídas e saldo por código sem multiplicar movimentações."""
         if not hasattr(self, "resumo_grid"):
@@ -1173,7 +1342,7 @@ class GestorMan(tk.Tk):
         if term:
             query += " WHERE c.codigo LIKE ? OR COALESCE(r.descricao, s.descricao, '') LIKE ?"
             params = (f"%{term}%", f"%{term}%")
-        query += " ORDER BY c.codigo"
+        query += " ORDER BY COALESCE(r.entradas, 0) - COALESCE(s.saidas, 0) DESC, c.codigo"
         with sqlite3.connect(self.database_path) as connection:
             rows = connection.execute(query, params).fetchall()
         total_entradas = total_saidas = total_saldo = 0
@@ -1197,13 +1366,214 @@ class GestorMan(tk.Tk):
             self.resumo_total_vars["saldo"].set(format_total(total_saldo))
         self._set_record_counter(len(self.resumo_grid.get_children()))
 
-    def _select_recebimento_row(self, _event):
-        selected = self.recebimento_grid.selection()
+    @staticmethod
+    def _pedido_numero(value):
+        """Converte números digitados nos formatos 12,5 e 1.250,00."""
+        text = str(value or "").strip().replace(" ", "")
+        if not text:
+            return 0.0
+        if "," in text:
+            text = text.replace(".", "").replace(",", ".")
+        try:
+            return float(text)
+        except ValueError:
+            return 0.0
+
+    @staticmethod
+    def _pedido_formatar(value, casas=2):
+        value = float(value or 0)
+        if value.is_integer():
+            return f"{int(value):,}".replace(",", ".")
+        return f"{value:,.{casas}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    def show_acompanhamento_pedidos(self):
+        """Acompanha níveis de estoque e necessidade de reposição por item."""
+        self._clear_main()
+        body = self._page_header("Acompanhamento de Pedidos", "Cadastros  /  Almoxarifado  /  Pedidos")
+
+        top = tk.Frame(body, bg="#edf2f7")
+        top.pack(fill="x", pady=(0, 10))
+        tk.Label(top, text="A data-limite é calculada pela cobertura do saldo (saldo ÷ média de consumo). O lead time padrão é 20 dias e pode ser alterado.",
+                 bg="#edf2f7", fg="#526b82", font=("Segoe UI", 8)).pack(side="left")
+        self.pedidos_search = tk.StringVar()
+        self.pedidos_search.trace_add("write", self._load_acompanhamento_pedidos)
+        tk.Entry(top, textvariable=self.pedidos_search, width=28, font=("Segoe UI", 8), relief="solid", bd=1).pack(side="right", ipady=3)
+        tk.Label(top, text="Pesquisar", bg="#edf2f7", fg="#38546e", font=("Segoe UI", 8, "bold")).pack(side="right", padx=(0, 8))
+
+        content = tk.Frame(body, bg="#edf2f7")
+        content.pack(fill="both", expand=True)
+        content.grid_columnconfigure(0, weight=1)
+        content.grid_rowconfigure(0, weight=1)
+        grid_frame = tk.Frame(content, bg="white", bd=1, relief="solid")
+        grid_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        columns = ("codigo", "descricao", "saldo", "lead_time", "media", "minimo", "maximo", "seguranca", "ponto", "ressuprimento", "status")
+        headings = ("CÓDIGO", "DESCRIÇÃO", "SALDO", "LEAD\n(DIAS)", "MÉDIA\nCONSUMO", "ESTOQUE\nMÍNIMO", "ESTOQUE\nMÁXIMO", "EST.\nSEGURANÇA", "RESSUPRIMENTO", "RESSUPRIMENTO\n(LIMITE)", "STATUS")
+        self.pedidos_grid = ttk.Treeview(grid_frame, columns=columns, show="headings", selectmode="browse")
+        self.pedidos_grid.configure(displaycolumns=tuple(col for col in columns if col != "ressuprimento"))
+        self.pedidos_columns = columns
+        self.pedidos_headings = dict(zip(columns, headings))
+        for col, heading in zip(columns, headings):
+            self.pedidos_grid.heading(col, text=heading)
+            self.pedidos_grid.column(col, width=90, minwidth=60, stretch=False,
+                                    anchor="w" if col == "descricao" else "center")
+        self.pedidos_grid.tag_configure("NORMAL", background="#e8f2ff", foreground="#145c9e")
+        self.pedidos_grid.tag_configure("SOLICITAR", background="#fff5c2", foreground="#866400")
+        self.pedidos_grid.tag_configure("URGENTE", background="#fde4e4", foreground="#b42318")
+        self.pedidos_grid.bind("<Double-1>", self._editar_parametro_pedido)
+        self.pedidos_grid.bind("<Button-1>", self._block_pedidos_column_resize, add="+")
+        sy = ttk.Scrollbar(grid_frame, orient="vertical", command=self.pedidos_grid.yview)
+        sx = ttk.Scrollbar(grid_frame, orient="horizontal", command=self.pedidos_grid.xview)
+        self.pedidos_grid.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
+        self.pedidos_grid.grid(row=0, column=0, sticky="nsew")
+        sy.grid(row=0, column=1, sticky="ns")
+        sx.grid(row=1, column=0, sticky="ew")
+        grid_frame.grid_rowconfigure(0, weight=1)
+        grid_frame.grid_columnconfigure(0, weight=1)
+
+        self._build_record_counter(body)
+        self._load_acompanhamento_pedidos()
+
+    def _load_acompanhamento_pedidos(self, *_args):
+        if not hasattr(self, "pedidos_grid"):
+            return
+        for item in self.pedidos_grid.get_children():
+            self.pedidos_grid.delete(item)
+        term = self.pedidos_search.get().strip() if hasattr(self, "pedidos_search") else ""
+        query = """
+            WITH recebimentos AS (SELECT codigo, MAX(descricao) descricao, COALESCE(SUM(CAST(REPLACE(REPLACE(TRIM(qtd), '.', ''), ',', '.') AS REAL)), 0) entradas FROM recebimento_almoxarifado GROUP BY codigo),
+            saidas AS (SELECT codigo, MAX(descricao) descricao, COALESCE(SUM(CAST(REPLACE(REPLACE(TRIM(qtd), '.', ''), ',', '.') AS REAL)), 0) saidas FROM saida_almoxarifado GROUP BY codigo),
+            codigos AS (SELECT codigo FROM recebimentos UNION SELECT codigo FROM saidas)
+            SELECT c.codigo, COALESCE(r.descricao, s.descricao, ''), COALESCE(r.entradas, 0)-COALESCE(s.saidas, 0),
+                   p.lead_time, p.media_consumo, p.ponto_pedido, p.ressuprimento, COALESCE(p.status, 'NORMAL')
+            FROM codigos c LEFT JOIN recebimentos r ON r.codigo=c.codigo LEFT JOIN saidas s ON s.codigo=c.codigo
+            LEFT JOIN acompanhamento_pedidos p ON p.codigo=c.codigo
+        """
+        params = ()
+        if term:
+            query += " WHERE c.codigo LIKE ? OR COALESCE(r.descricao, s.descricao, '') LIKE ?"
+            params = (f"%{term}%", f"%{term}%")
+        query += " ORDER BY c.codigo"
+        with sqlite3.connect(self.database_path) as connection:
+            rows = connection.execute(query, params).fetchall()
+        for codigo, descricao, saldo, lead, media, ponto, ressuprimento, status in rows:
+            saldo = float(saldo or 0)
+            lead = 20 if lead is None else float(lead)
+            minimo, maximo, seguranca = saldo * .30, saldo * 1.10, saldo * .50
+            ponto, ressuprimento = self._calcular_datas_pedido(saldo, media, lead)
+            values = (codigo, descricao, self._pedido_formatar(saldo), self._pedido_formatar(lead), self._pedido_formatar(media), self._pedido_formatar(minimo), self._pedido_formatar(maximo), self._pedido_formatar(seguranca), ponto or "-", ressuprimento or "-", status)
+            self.pedidos_grid.insert("", "end", iid=codigo, values=values, tags=(status,))
+        self._ajustar_colunas_pedidos()
+        self._set_record_counter(len(rows))
+
+    def _ajustar_colunas_pedidos(self):
+        """Dimensiona a grade pelo cabeçalho e pelos valores, sem deixar lacunas excessivas."""
+        medida = tkfont.Font(font=("Segoe UI", 8))
+        limites = {"codigo": (75, 130), "descricao": (150, 360), "ressuprimento": (105, 140), "status": (90, 100)}
+        for coluna in self.pedidos_columns:
+            cabecalho = max(self.pedidos_headings[coluna].split("\n"), key=len)
+            largura = medida.measure(cabecalho) + 28
+            for item in self.pedidos_grid.get_children():
+                largura = max(largura, medida.measure(str(self.pedidos_grid.set(item, coluna))) + 24)
+            minimo, maximo = limites.get(coluna, (70, 115))
+            self.pedidos_grid.column(coluna, width=max(minimo, min(largura, maximo)), minwidth=minimo, stretch=False)
+
+    @staticmethod
+    def _calcular_datas_pedido(saldo, media_consumo, lead_time):
+        """Retorna data-limite de suprimento e ponto de pedido a partir da cobertura do estoque."""
+        media = float(media_consumo or 0)
+        if media <= 0:
+            return "", ""
+        dias_cobertura = max(0, float(saldo or 0) / media)
+        data_ressuprimento = datetime.now() + timedelta(days=dias_cobertura)
+        ponto_pedido = data_ressuprimento - timedelta(days=max(0, float(lead_time or 20)))
+        return ponto_pedido.strftime("%d/%m/%Y"), data_ressuprimento.strftime("%d/%m/%Y")
+
+    def _block_pedidos_column_resize(self, event):
+        """Impede alteração manual das larguras pelos separadores do cabeçalho."""
+        if self.pedidos_grid.identify_region(event.x, event.y) == "separator":
+            return "break"
+
+    def _editar_parametro_pedido(self, event):
+        """Edita lead time e média de consumo diretamente na grade."""
+        coluna = self.pedidos_grid.identify_column(event.x)
+        item = self.pedidos_grid.identify_row(event.y)
+        if not item or coluna not in ("#4", "#5"):
+            return
+        indice = int(coluna[1:]) - 1
+        campo = self.pedidos_columns[indice]
+        x, y, largura, altura = self.pedidos_grid.bbox(item, coluna)
+        editor = tk.Entry(self.pedidos_grid, font=("Segoe UI", 8), justify="center")
+        editor.insert(0, self.pedidos_grid.item(item, "values")[indice])
+        editor.place(x=x, y=y, width=largura, height=altura)
+        editor.focus_set()
+        editor.select_range(0, "end")
+        editor.bind("<Return>", lambda _event: self._salvar_celula_pedido(item, campo, editor))
+        editor.bind("<FocusOut>", lambda _event: self._salvar_celula_pedido(item, campo, editor))
+        editor.bind("<Escape>", lambda _event: editor.destroy())
+
+    def _salvar_celula_pedido(self, codigo, campo, editor):
+        if not editor.winfo_exists():
+            return
+        valor = self._pedido_numero(editor.get())
+        editor.destroy()
+        with sqlite3.connect(self.database_path) as connection:
+            row = connection.execute("SELECT lead_time, media_consumo FROM acompanhamento_pedidos WHERE codigo = ?", (codigo,)).fetchone()
+            lead, media = row or (20, 0)
+            lead = 20 if lead is None else float(lead)
+            media = 0 if media is None else float(media)
+            if campo == "lead_time":
+                lead = valor or 20
+            else:
+                media = valor
+            saldo = self._pedido_numero(self.pedidos_grid.item(codigo, "values")[2])
+            ponto, ressuprimento = self._calcular_datas_pedido(saldo, media, lead)
+            connection.execute("INSERT INTO acompanhamento_pedidos (codigo, lead_time, media_consumo, ponto_pedido, ressuprimento) VALUES (?, ?, ?, ?, ?) ON CONFLICT(codigo) DO UPDATE SET lead_time=excluded.lead_time, media_consumo=excluded.media_consumo, ponto_pedido=excluded.ponto_pedido, ressuprimento=excluded.ressuprimento", (codigo, lead, media, ponto, ressuprimento))
+        self._load_acompanhamento_pedidos()
+        self.pedidos_grid.selection_set(codigo)
+
+    def _select_acompanhamento_item(self, _event):
+        selected = self.pedidos_grid.selection()
         if not selected:
             return
-        values = self.recebimento_grid.item(selected[0], "values")
-        for key, value in zip(self.RECEBIMENTO_COLUMNS, values):
-            self.recebimento_vars[key].set(value)
+        codigo = selected[0]
+        values = self.pedidos_grid.item(codigo, "values")
+        self.pedido_item_var.set(f"{values[0]} — {values[1]}")
+        with sqlite3.connect(self.database_path) as connection:
+            row = connection.execute("SELECT lead_time, media_consumo FROM acompanhamento_pedidos WHERE codigo = ?", (codigo,)).fetchone()
+        lead, media = row or (20, "")
+        lead = 20 if lead is None else lead
+        saldo = self._pedido_numero(values[2])
+        ponto, ressuprimento = self._calcular_datas_pedido(saldo, media, lead)
+        self.pedido_vars["lead_time"].set(str(lead).replace(".", ","))
+        self.pedido_vars["media_consumo"].set("" if media is None else str(media).replace(".", ","))
+        self.pedido_vars["ponto_pedido"].set(ponto)
+        self.pedido_vars["ressuprimento"].set(ressuprimento)
+
+    def _save_acompanhamento_item(self):
+        selected = self.pedidos_grid.selection()
+        if not selected:
+            messagebox.showinfo("Pedidos", "Selecione um item para informar os parâmetros.")
+            return
+        codigo = selected[0]
+        lead = self._pedido_numero(self.pedido_vars["lead_time"].get()) or 20
+        media = self._pedido_numero(self.pedido_vars["media_consumo"].get())
+        saldo = self._pedido_numero(self.pedidos_grid.item(codigo, "values")[2])
+        ponto, ressuprimento = self._calcular_datas_pedido(saldo, media, lead)
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("INSERT INTO acompanhamento_pedidos (codigo, lead_time, media_consumo, ponto_pedido, ressuprimento) VALUES (?, ?, ?, ?, ?) ON CONFLICT(codigo) DO UPDATE SET lead_time=excluded.lead_time, media_consumo=excluded.media_consumo, ponto_pedido=excluded.ponto_pedido, ressuprimento=excluded.ressuprimento", (codigo, lead, media, ponto, ressuprimento))
+        self._load_acompanhamento_pedidos()
+        self.pedidos_grid.selection_set(codigo)
+
+    def _set_acompanhamento_status(self, status):
+        selected = self.pedidos_grid.selection()
+        if not selected:
+            messagebox.showinfo("Status", "Selecione um item para definir o status.")
+            return
+        codigo = selected[0]
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("INSERT INTO acompanhamento_pedidos (codigo, status) VALUES (?, ?) ON CONFLICT(codigo) DO UPDATE SET status=excluded.status", (codigo, status))
+        self._load_acompanhamento_pedidos()
+        self.pedidos_grid.selection_set(codigo)
 
     def _read_recebimento_txt_rows(self, file_path):
         """Lê TXT de recebimento separado por ;, tab, | ou vírgula, com cabeçalho opcional."""
@@ -1291,45 +1661,16 @@ class GestorMan(tk.Tk):
     def show_almox_saida(self):
         self._clear_main()
         body = self._page_header("Saída de Itens de Almoxarifado", "Cadastros  /  Almoxarifado  /  Saída")
-        self._build_saida_form(body)
         self._build_saida_actions(body)
         self._build_saida_table(body)
         self._build_record_counter(body)
         self._load_saida_items()
-        self.new_saida_item()
-
-    def _build_saida_form(self, parent):
-        box = tk.LabelFrame(parent, text="  Dados de Saída  ",
-                            bg="#eef4fa", fg="#28435e", font=("Segoe UI", 9, "bold"),
-                            padx=14, pady=12, bd=1, relief="groove")
-        box.pack(fill="x")
-        box.grid_columnconfigure(0, weight=1)
-        box.grid_columnconfigure(1, weight=1)
-        box.grid_columnconfigure(2, weight=1)
-        box.grid_columnconfigure(3, weight=1)
-
-        fields = [
-            ("Data", "data"), ("Código", "codigo"), 
-            ("Descrição", "descricao"), ("Unidade", "un"),
-            ("Quantidade", "qtd"), ("Turno", "turno"), 
-            ("Aplicação", "aplicacao"), ("Requisitante", "requisitante"),
-        ]
-        self.saida_vars = {key: tk.StringVar() for _, key in fields}
-        for idx, (label, key) in enumerate(fields):
-            row, col = divmod(idx, 4)
-            cell = tk.Frame(box, bg="#eef4fa")
-            cell.grid(row=row, column=col, sticky="ew", padx=4, pady=4)
-            tk.Label(cell, text=label, bg="#eef4fa", fg="#38546e", anchor="w",
-                     font=("Segoe UI", 7)).pack(fill="x")
-            tk.Entry(cell, textvariable=self.saida_vars[key], font=("Segoe UI", 8),
-                     relief="solid", bd=1).pack(fill="x", ipady=2)
 
     def _build_saida_actions(self, parent):
         actions = tk.Frame(parent, bg="#edf2f7")
         actions.pack(pady=16)
+        self._action(actions, "Salvar novos/edições", self.save_saida_items, "#ffffff", "#27835c")
         self._action(actions, "＋  Nova Saída", self.new_saida_item, "#ffffff", "#315a7c")
-        self._action(actions, "▣  Inserir", self.insert_saida_item, "#1678bf", "white")
-        self._action(actions, "✓  Salvar edição", self.update_saida_item, "#ffffff", "#315a7c")
         self._action(actions, "⇧  Carga TXT", self.import_saida_txt, "#ffffff", "#315a7c")
         self._action(actions, "✕  Excluir", self.delete_saida_item, "#ffffff", "#b23b3b")
 
@@ -1362,7 +1703,11 @@ class GestorMan(tk.Tk):
         scroll_x.grid(row=1, column=0, sticky="ew")
         frame.grid_rowconfigure(0, weight=1)
         frame.grid_columnconfigure(0, weight=1)
-        self.saida_grid.bind("<<TreeviewSelect>>", self._select_saida_row)
+        self._new_saida_rows = {}
+        self._edited_saida_rows = {}
+        self._new_saida_sequence = 0
+        self.saida_grid.bind("<Double-1>", self._edit_saida_cell)
+        self.saida_grid.bind("<F2>", self._edit_selected_saida_cell)
 
     def _load_saida_items(self):
         """Consulta no SQLite os itens de saída que atendem ao texto pesquisado."""
@@ -1376,11 +1721,17 @@ class GestorMan(tk.Tk):
             condition = " OR ".join(f"{column} LIKE ?" for column in self.SAIDA_COLUMNS)
             query += f" WHERE {condition}"
             params = tuple(f"%{term}%" for _ in self.SAIDA_COLUMNS)
-        query += " ORDER BY data DESC"
+        # Registros novos ficam sempre na primeira linha, logo abaixo do cabeçalho.
+        query += " ORDER BY id DESC"
         with sqlite3.connect(self.database_path) as connection:
             rows = connection.execute(query, params).fetchall()
         for row_id, *values in rows:
+            values = self._edited_saida_rows.get(str(row_id), values)
             self.saida_grid.insert("", "end", iid=str(row_id), values=values)
+        # Mantém visíveis as linhas que ainda estão sendo preenchidas na tabela.
+        for item_id, values in getattr(self, "_new_saida_rows", {}).items():
+            self.saida_grid.insert("", 0, iid=item_id, values=values, tags=("nova_saida",))
+        self._auto_fit_tree_columns(self.saida_grid, self.SAIDA_COLUMNS)
         self._set_record_counter(len(self.saida_grid.get_children()))
 
     def filter_saida_items(self, *_args):
@@ -1388,65 +1739,130 @@ class GestorMan(tk.Tk):
             self._load_saida_items()
 
     def new_saida_item(self):
-        for var in self.saida_vars.values():
-            var.set("")
-        self.saida_grid.selection_remove(self.saida_grid.selection())
+        """Inclui uma linha editável no topo da tabela, com a data atual."""
+        self._new_saida_sequence += 1
+        item_id = f"nova_saida_{self._new_saida_sequence}"
+        values = [""] * len(self.SAIDA_COLUMNS)
+        values[0] = datetime.now().strftime("%d/%m/%Y")
+        self._new_saida_rows[item_id] = values
+        self.saida_grid.insert("", 0, iid=item_id, values=values, tags=("nova_saida",))
+        self.saida_grid.selection_set(item_id)
+        self.saida_grid.focus(item_id)
+        self.saida_grid.see(item_id)
+        self._auto_fit_tree_columns(self.saida_grid, self.SAIDA_COLUMNS)
+        self.after_idle(lambda: self._open_saida_cell_editor(item_id, "#2"))
 
-    def insert_saida_item(self):
-        required = ("data", "codigo", "descricao")
-        if any(not self.saida_vars[key].get().strip() for key in required):
-            messagebox.showwarning("Campos obrigatórios", "Preencha data, código e descrição.")
+    def save_saida_items(self):
+        """Grava de uma vez as novas linhas e as edicoes pendentes."""
+        new_rows = list(self._new_saida_rows.items())
+        incomplete = [item_id for item_id, values in new_rows if not values[1] or not values[2]]
+        if incomplete:
+            messagebox.showwarning(
+                "Salvar registros",
+                "Preencha codigo e descricao em todas as novas saidas antes de salvar.",
+            )
+            self.saida_grid.selection_set(incomplete[0])
+            self.saida_grid.focus(incomplete[0])
+            self.saida_grid.see(incomplete[0])
             return
-        values = tuple(self.saida_vars[key].get().strip() for key in self.SAIDA_COLUMNS)
+        if not new_rows and not self._edited_saida_rows:
+            messagebox.showinfo("Salvar registros", "Nao ha registros novos ou alteracoes para salvar.")
+            return
         try:
             with sqlite3.connect(self.database_path) as connection:
                 columns = ", ".join(self.SAIDA_COLUMNS)
                 placeholders = ", ".join("?" for _ in self.SAIDA_COLUMNS)
-                connection.execute(f"INSERT INTO saida_almoxarifado ({columns}) VALUES ({placeholders})", values)
+                connection.executemany(
+                    f"INSERT INTO saida_almoxarifado ({columns}) VALUES ({placeholders})",
+                    [values for _item_id, values in new_rows],
+                )
+                assignments = ", ".join(f"{column} = ?" for column in self.SAIDA_COLUMNS)
+                connection.executemany(
+                    f"UPDATE saida_almoxarifado SET {assignments} WHERE id = ?",
+                    [tuple(values) + (int(item_id),) for item_id, values in self._edited_saida_rows.items()],
+                )
         except sqlite3.Error as error:
-            messagebox.showerror("Erro ao inserir", f"Não foi possível inserir o item.\n\n{error}")
+            messagebox.showerror("Erro ao salvar", f"Nao foi possivel salvar os registros.\n\n{error}")
             return
+        saved_total = len(new_rows) + len(self._edited_saida_rows)
+        self._new_saida_rows.clear()
+        self._edited_saida_rows.clear()
         self._load_saida_items()
-        self.new_saida_item()
-
-    def update_saida_item(self):
-        selected = self.saida_grid.selection()
-        if not selected:
-            messagebox.showinfo("Salvar edição", "Selecione um item para editar.")
-            return
-        required = ("data", "codigo", "descricao")
-        if any(not self.saida_vars[key].get().strip() for key in required):
-            messagebox.showwarning("Campos obrigatórios", "Preencha data, código e descrição.")
-            return
-        values = tuple(self.saida_vars[key].get().strip() for key in self.SAIDA_COLUMNS)
-        assignments = ", ".join(f"{column} = ?" for column in self.SAIDA_COLUMNS)
-        try:
-            with sqlite3.connect(self.database_path) as connection:
-                connection.execute(f"UPDATE saida_almoxarifado SET {assignments} WHERE id = ?",
-                                   (*values, int(selected[0])))
-        except sqlite3.Error as error:
-            messagebox.showerror("Erro ao atualizar", f"Não foi possível atualizar o item.\n\n{error}")
-            return
-        self._load_saida_items()
-        self.new_saida_item()
+        messagebox.showinfo("Salvar registros", f"{saved_total} registro(s) salvo(s) com sucesso.")
 
     def delete_saida_item(self):
         selected = self.saida_grid.selection()
         if not selected:
             messagebox.showinfo("Excluir item", "Selecione um item na lista.")
             return
-        with sqlite3.connect(self.database_path) as connection:
-            connection.execute("DELETE FROM saida_almoxarifado WHERE id = ?", (int(selected[0]),))
-        self._load_saida_items()
-        self.new_saida_item()
-
-    def _select_saida_row(self, _event):
-        selected = self.saida_grid.selection()
-        if not selected:
+        item_id = selected[0]
+        if item_id in self._new_saida_rows:
+            self._new_saida_rows.pop(item_id, None)
+            self.saida_grid.delete(item_id)
+            self._set_record_counter(len(self.saida_grid.get_children()))
             return
-        values = self.saida_grid.item(selected[0], "values")
-        for key, value in zip(self.SAIDA_COLUMNS, values):
-            self.saida_vars[key].set(value)
+        if not messagebox.askyesno("Excluir item", "Deseja mesmo excluir o registro?"):
+            return
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("DELETE FROM saida_almoxarifado WHERE id = ?", (int(item_id),))
+        self._edited_saida_rows.pop(item_id, None)
+        self._load_saida_items()
+
+    def _edit_saida_cell(self, event):
+        if self.saida_grid.identify_region(event.x, event.y) != "cell":
+            return
+        item_id = self.saida_grid.identify_row(event.y)
+        column = self.saida_grid.identify_column(event.x)
+        if item_id and column:
+            self._open_saida_cell_editor(item_id, column)
+
+    def _edit_selected_saida_cell(self, _event):
+        selected = self.saida_grid.selection()
+        if selected:
+            self._open_saida_cell_editor(selected[0], "#1")
+        return "break"
+
+    def _open_saida_cell_editor(self, item_id, column):
+        bbox = self.saida_grid.bbox(item_id, column)
+        if not bbox:
+            return
+        index = int(column[1:]) - 1
+        x, y, width, height = bbox
+        editor = tk.Entry(self.saida_grid, font=("Segoe UI", 8))
+        editor.insert(0, self.saida_grid.item(item_id, "values")[index])
+        editor.place(x=x, y=y, width=width, height=height)
+        editor.focus_set()
+        editor.select_range(0, "end")
+        editor.bind("<Return>", lambda _event: self._save_saida_cell_and_advance(item_id, index, editor))
+        editor.bind("<FocusOut>", lambda _event: self._save_saida_cell(item_id, index, editor))
+        editor.bind("<Escape>", lambda _event: editor.destroy())
+
+    def _save_saida_cell_and_advance(self, item_id, index, editor):
+        """Salva a célula atual e leva o cursor à próxima coluna com Enter."""
+        saved_id = self._save_saida_cell(item_id, index, editor)
+        next_index = index + 1
+        if saved_id and next_index < len(self.SAIDA_COLUMNS):
+            self.after_idle(lambda: self._open_saida_cell_editor(saved_id, f"#{next_index + 1}"))
+        return "break"
+
+    def _save_saida_cell(self, item_id, index, editor):
+        if not editor.winfo_exists():
+            return
+        value = editor.get().strip()
+        editor.destroy()
+        values = list(self.saida_grid.item(item_id, "values"))
+        values[index] = value
+
+        if item_id in self._new_saida_rows:
+            self._new_saida_rows[item_id] = values
+            self.saida_grid.item(item_id, values=values)
+            self._auto_fit_tree_columns(self.saida_grid, self.SAIDA_COLUMNS)
+            return item_id
+
+        self._edited_saida_rows[item_id] = values
+        self.saida_grid.item(item_id, values=values)
+        self._auto_fit_tree_columns(self.saida_grid, self.SAIDA_COLUMNS)
+        return item_id
 
     def _read_saida_txt_rows(self, file_path):
         """Lê TXT de saída separado por ;, tab, | ou vírgula, com cabeçalho opcional."""
@@ -2031,6 +2447,8 @@ class GestorMan(tk.Tk):
         selected = self.grid.selection()
         if not selected:
             messagebox.showinfo("Excluir OS", "Selecione uma Ordem de Serviço na lista.")
+            return
+        if not messagebox.askyesno("Excluir OS", "Deseja mesmo excluir o registro?"):
             return
         with sqlite3.connect(self.database_path) as connection:
             connection.execute("DELETE FROM ordens_servico WHERE id = ?", (int(selected[0]),))
